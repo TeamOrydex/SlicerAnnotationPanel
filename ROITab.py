@@ -263,6 +263,11 @@ class ROITab(qt.QWidget):
 
         self._placement_node = node
 
+        # For ROI nodes (ellipse/rectangle): set a default size so the box is
+        # visible with draggable handles. Don't use persistent placement mode.
+        if tool_id in ("ellipse", "rectangle") and hasattr(node, "SetSize"):
+            node.SetSize([30.0, 30.0, 30.0])
+
         # Observe the node for placement completion
         self._add_node_observer(
             node,
@@ -275,7 +280,12 @@ class ROITab(qt.QWidget):
         selection_node.SetActivePlaceNodeID(node.GetID())
         interaction_node = slicer.app.applicationLogic().GetInteractionNode()
         interaction_node.SetCurrentInteractionMode(interaction_node.Place)
-        interaction_node.SetPlaceModePersistence(True)
+        # ROI nodes: single placement (center click), then user resizes via handles
+        # Other tools: persistent placement for multiple points
+        if tool_id in ("ellipse", "rectangle"):
+            interaction_node.SetPlaceModePersistence(False)
+        else:
+            interaction_node.SetPlaceModePersistence(True)
 
     def _deactivate_tool(self):
         """Cancel placement mode and finalize pending shapes."""
