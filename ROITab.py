@@ -14,17 +14,13 @@ logger = logging.getLogger(__name__)
 
 # Maps ROI type names to their Slicer MRML node class names.
 # Checked at runtime; unavailable types get their button disabled.
-# Ellipse uses ROINode for placement (drag interaction), then converts
-# the bounding box into a ClosedCurveNode with elliptical control points.
 MARKUP_NODE_CLASSES = {
-    "ellipse": "vtkMRMLMarkupsROINode",
+    "ellipse": "vtkMRMLMarkupsClosedCurveNode",
     "rectangle": "vtkMRMLMarkupsROINode",
     "polygon": "vtkMRMLMarkupsClosedCurveNode",
     "freehand_curve": "vtkMRMLMarkupsCurveNode",
     "line": "vtkMRMLMarkupsLineNode",
 }
-
-NUM_ELLIPSE_POINTS = 24
 
 DEFAULT_ROI_LABELS = [
     "Normal",
@@ -49,29 +45,6 @@ def rgb_float_to_hex(r, g, b):
     return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
 
 
-def generate_ellipse_points(center, radii, normal_axis=2, num_points=NUM_ELLIPSE_POINTS):
-    """
-    Generate control points for an ellipse inscribed in a bounding box.
-    center: [cx, cy, cz], radii: [rx, ry] (semi-axes).
-    normal_axis: which axis is the slice normal (0=x, 1=y, 2=z).
-    Returns list of {"x", "y", "z"} dicts.
-    """
-    import math
-    points = []
-    for i in range(num_points):
-        angle = 2.0 * math.pi * i / num_points
-        pt = [center[0], center[1], center[2]]
-        if normal_axis == 2:  # axial slice (x-y plane)
-            pt[0] += radii[0] * math.cos(angle)
-            pt[1] += radii[1] * math.sin(angle)
-        elif normal_axis == 1:  # coronal slice (x-z plane)
-            pt[0] += radii[0] * math.cos(angle)
-            pt[2] += radii[1] * math.sin(angle)
-        else:  # sagittal slice (y-z plane)
-            pt[1] += radii[0] * math.cos(angle)
-            pt[2] += radii[1] * math.sin(angle)
-        points.append({"x": pt[0], "y": pt[1], "z": pt[2]})
-    return points
 
 
 class ROITab(qt.QWidget):
@@ -263,11 +236,6 @@ class ROITab(qt.QWidget):
 
         self._placement_node = node
 
-        # For ROI nodes (ellipse/rectangle): set a default size so the box is
-        # visible with draggable handles. Don't use persistent placement mode.
-        if tool_id in ("ellipse", "rectangle") and hasattr(node, "SetSize"):
-            node.SetSize([30.0, 30.0, 30.0])
-
         # Observe the node for placement completion
         self._add_node_observer(
             node,
@@ -280,12 +248,7 @@ class ROITab(qt.QWidget):
         selection_node.SetActivePlaceNodeID(node.GetID())
         interaction_node = slicer.app.applicationLogic().GetInteractionNode()
         interaction_node.SetCurrentInteractionMode(interaction_node.Place)
-        # ROI nodes: single placement (center click), then user resizes via handles
-        # Other tools: persistent placement for multiple points
-        if tool_id in ("ellipse", "rectangle"):
-            interaction_node.SetPlaceModePersistence(False)
-        else:
-            interaction_node.SetPlaceModePersistence(True)
+        interaction_node.SetPlaceModePersistence(True)
 
     def _deactivate_tool(self):
         """Cancel placement mode and finalize pending shapes."""
@@ -300,16 +263,6 @@ class ROITab(qt.QWidget):
         if not self._placement_node:
             return
 
-        # Ellipse: convert ROI bounding box to elliptical closed curve
-        if active == "ellipse":
-            try:
-                if self._placement_node.GetNumberOfControlPoints() > 0:
-                    self._convert_roi_to_ellipse(self._placement_node)
-                    self._placement_node = None
-                    return
-            except Exception:
-                pass
-
         # Rectangle: finalize the ROI node as-is
         if active == "rectangle":
             try:
@@ -320,8 +273,8 @@ class ROITab(qt.QWidget):
             except Exception:
                 pass
 
-        # Polygon/freehand: finalize if enough points exist
-        if active in ("polygon", "freehand_curve"):
+        # Ellipse/Polygon/freehand: finalize if enough points exist
+        if active in ("ellipse", "polygon", "freehand_curve"):
             try:
                 if self._placement_node.GetNumberOfControlPoints() >= 3:
                     self._finalize_roi(self._placement_node, active)
@@ -362,93 +315,15 @@ class ROITab(qt.QWidget):
         if node is None:
             return
 
-        # Line: finalize after 2 points.
-        # Ellipse/Rectangle (ROINode): placed with one click, user resizes via handles,
-        #   finalized when tool is deactivated (click button again).
-        # Polygon, freehand: user draws multiple points, finalized on tool deactivation.
         tool_id = self._active_tool
         if tool_id == "line" and node.GetNumberOfControlPoints() >= 2:
             self._finalize_roi(node, tool_id)
             self._deactivate_tool()
             self._uncheck_all_tools()
-        elif tool_id in ("ellipse", "rectangle"):
-            # ROI is placed — exit placement mode so user can resize via handles.
-            # Finalization happens when the tool button is clicked again (deactivation).
-            try:
-                interaction_node = slicer.app.applicationLogic().GetInteractionNode()
-                interaction_node.SetCurrentInteractionMode(interaction_node.ViewTransform)
-            except Exception:
-                pass
-
-    def _convert_roi_to_ellipse(self, roi_node):
-        """
-        Convert a vtkMRMLMarkupsROINode bounding box into an elliptical
-        ClosedCurveNode. Removes the temporary ROI node after conversion.
-        """
-        # Extract center and size from the ROI node
-        center = [0.0, 0.0, 0.0]
-        roi_node.GetCenter(center)
-        size = [0.0, 0.0, 0.0]
-        roi_node.GetSize(size)
-        radii = [size[0] / 2.0, size[1] / 2.0]
-
-        # Determine slice normal axis from the active view
-        normal_axis = self._get_slice_normal_axis()
-
-        # Generate elliptical points
-        ellipse_points = generate_ellipse_points(center, radii, normal_axis)
-
-        # Create a ClosedCurveNode with these points
-        curve_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsClosedCurveNode")
-        if not curve_node:
-            logger.error("Failed to create ClosedCurveNode for ellipse")
-            return
-
-        selected_label = self._get_selected_label()
-        curve_node.SetName(f"ROI_{selected_label}_ellipse" if selected_label else "ROI_ellipse")
-
-        for pt in ellipse_points:
-            curve_node.AddControlPoint(pt["x"], pt["y"], pt["z"])
-
-        # Apply color
-        display_node = curve_node.GetDisplayNode()
-        if display_node:
-            r, g, b = hex_to_rgb_float(self._current_color)
-            display_node.SetSelectedColor(r, g, b)
-            display_node.SetColor(r, g, b)
-
-        # Remove the temporary ROI node
-        temp_id = roi_node.GetID()
-        self._remove_node_observers(temp_id)
-        slicer.mrmlScene.RemoveNode(roi_node)
-
-        # Finalize the ellipse curve as an ROIAnnotation
-        roi_annotation = ROIAnnotation()
-        roi_annotation.roi_type = "ellipse"
-        roi_annotation.label = selected_label
-        roi_annotation.color = self._current_color
-        roi_annotation.mrml_node_id = curve_node.GetID()
-        roi_annotation.slice_view = self._get_active_slice_view()
-        roi_annotation.slice_index = self._get_current_slice_index()
-        roi_annotation.control_points = ellipse_points
-        roi_annotation.radii = radii
-
-        self._roi_annotations.append(roi_annotation)
-        self._update_table()
-        self._sync_to_record()
-
-    def _get_slice_normal_axis(self):
-        """Determine which axis is normal to the current slice view (0=x, 1=y, 2=z)."""
-        try:
-            layout_manager = slicer.app.layoutManager()
-            # Check which view has focus, default to Red (axial = z-normal)
-            for name, axis in [("Red", 2), ("Green", 1), ("Yellow", 0)]:
-                widget = layout_manager.sliceWidget(name)
-                if widget and widget.hasFocus():
-                    return axis
-        except Exception:
+        elif tool_id == "rectangle":
+            # ROI node: finalize on deactivation
             pass
-        return 2  # Default: axial (z-normal)
+
 
     def _guess_tool_type(self, node):
         """Infer tool type from the node class."""
@@ -854,11 +729,7 @@ class ROITab(qt.QWidget):
 
     def _create_node_from_roi(self, roi):
         """Create a Slicer markup node from an ROIAnnotation (for loading saved data)."""
-        # Ellipse is stored as a ClosedCurveNode (not the ROINode used for placement)
-        if roi.roi_type == "ellipse":
-            class_name = "vtkMRMLMarkupsClosedCurveNode"
-        else:
-            class_name = MARKUP_NODE_CLASSES.get(roi.roi_type)
+        class_name = MARKUP_NODE_CLASSES.get(roi.roi_type)
 
         if not class_name:
             logger.warning(f"Unknown ROI type: {roi.roi_type}")
