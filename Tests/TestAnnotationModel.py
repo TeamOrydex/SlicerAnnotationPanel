@@ -374,5 +374,105 @@ class TestAnnotationRecordWithSegmentation(unittest.TestCase):
         self.assertEqual(restored.segmentation.total_voxel_count, 3000)
 
 
+class TestFreeformData(unittest.TestCase):
+    def test_empty_freeform_data(self):
+        record = AnnotationRecord(freeform_data={})
+        d = record.to_dict()
+        self.assertEqual(d["freeform_data"], {})
+        restored = AnnotationRecord.from_dict(d)
+        self.assertEqual(restored.freeform_data, {})
+
+    def test_complex_nested_freeform_data(self):
+        data = {
+            "patient_age": 67,
+            "finding": "Suspicious mass",
+            "is_urgent": True,
+            "measurements": {
+                "length_mm": 23.5,
+                "width_mm": 14.2,
+                "nested_obj": {
+                    "level3_key": "deep_value",
+                    "level3_num": 99,
+                }
+            },
+            "tags": ["urgent", "follow-up"],
+        }
+        record = AnnotationRecord(freeform_data=data)
+        d = record.to_dict()
+        self.assertEqual(d["freeform_data"]["patient_age"], 67)
+        self.assertEqual(d["freeform_data"]["is_urgent"], True)
+        self.assertEqual(d["freeform_data"]["measurements"]["length_mm"], 23.5)
+        self.assertEqual(
+            d["freeform_data"]["measurements"]["nested_obj"]["level3_key"],
+            "deep_value"
+        )
+
+        restored = AnnotationRecord.from_dict(d)
+        self.assertEqual(restored.freeform_data["patient_age"], 67)
+        self.assertEqual(restored.freeform_data["is_urgent"], True)
+        self.assertEqual(restored.freeform_data["measurements"]["width_mm"], 14.2)
+        self.assertEqual(
+            restored.freeform_data["measurements"]["nested_obj"]["level3_num"], 99
+        )
+        self.assertEqual(restored.freeform_data["tags"], ["urgent", "follow-up"])
+
+    def test_deeply_nested_three_levels(self):
+        data = {
+            "level1": {
+                "level2": {
+                    "level3": "value_at_depth_3"
+                }
+            }
+        }
+        record = AnnotationRecord(freeform_data=data)
+        json_str = record.to_json()
+        restored = AnnotationRecord.from_json(json_str)
+        self.assertEqual(
+            restored.freeform_data["level1"]["level2"]["level3"],
+            "value_at_depth_3"
+        )
+
+    def test_arrays_with_numbers_strings_booleans(self):
+        data = {
+            "numbers": [1, 2.5, 3, 4.0],
+            "strings": ["hello", "world"],
+            "booleans": [True, False, True],
+        }
+        record = AnnotationRecord(freeform_data=data)
+        json_str = record.to_json()
+        restored = AnnotationRecord.from_json(json_str)
+        self.assertEqual(restored.freeform_data["numbers"], [1, 2.5, 3, 4.0])
+        self.assertEqual(restored.freeform_data["strings"], ["hello", "world"])
+        self.assertEqual(restored.freeform_data["booleans"], [True, False, True])
+
+    def test_non_serializable_value_raises_error(self):
+        from datetime import datetime
+        data = {"timestamp": datetime(2024, 1, 1, 12, 0, 0)}
+        record = AnnotationRecord(freeform_data=data)
+        with self.assertRaises(TypeError):
+            record.to_json()
+
+    def test_json_round_trip_preserves_types(self):
+        data = {
+            "int_val": 42,
+            "float_val": 3.14,
+            "bool_val": False,
+            "null_val": None,
+            "str_val": "text",
+            "list_val": [1, "two", True],
+            "obj_val": {"a": 1},
+        }
+        record = AnnotationRecord(freeform_data=data)
+        json_str = record.to_json()
+        restored = AnnotationRecord.from_json(json_str)
+        self.assertEqual(restored.freeform_data["int_val"], 42)
+        self.assertIsInstance(restored.freeform_data["int_val"], int)
+        self.assertAlmostEqual(restored.freeform_data["float_val"], 3.14)
+        self.assertEqual(restored.freeform_data["bool_val"], False)
+        self.assertIsNone(restored.freeform_data["null_val"])
+        self.assertEqual(restored.freeform_data["list_val"], [1, "two", True])
+        self.assertEqual(restored.freeform_data["obj_val"], {"a": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

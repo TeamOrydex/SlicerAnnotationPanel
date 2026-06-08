@@ -64,6 +64,22 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         self._sample_seg_btn.clicked.connect(self._on_add_sample_segmentation)
         self.layout.addWidget(self._sample_seg_btn)
 
+        self._sample_json_btn = qt.QPushButton("Load Sample JSON Data")
+        self._sample_json_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
+        self._sample_json_btn.setToolTip(
+            "Load sample freeform JSON data into the JSON tab"
+        )
+        self._sample_json_btn.clicked.connect(self._on_load_sample_json)
+        self.layout.addWidget(self._sample_json_btn)
+
+        self._print_json_btn = qt.QPushButton("Print Current JSON")
+        self._print_json_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
+        self._print_json_btn.setToolTip(
+            "Print current freeform JSON data to the Python console"
+        )
+        self._print_json_btn.clicked.connect(self._on_print_json)
+        self.layout.addWidget(self._print_json_btn)
+
         separator = qt.QFrame()
         separator.setFrameShape(qt.QFrame.HLine)
         separator.setFrameShadow(qt.QFrame.Sunken)
@@ -176,6 +192,37 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
 
         slicer.util.infoDisplay(
             "Added sample segmentation (Tumor + Edema spheres).",
+            "Test Harness",
+        )
+
+    def _on_load_sample_json(self):
+        """Load sample freeform JSON data into the JSON tab."""
+        import json as json_mod
+        sample = {
+            "patient_age": 67,
+            "finding": "Suspicious mass in right lobe",
+            "is_urgent": True,
+            "measurements": {
+                "length_mm": 23.5,
+                "width_mm": 14.2,
+                "depth_mm": 11.8,
+            },
+            "tags": ["urgent", "follow-up", "biopsy-recommended"],
+            "notes": "Patient referred from primary care.\nPrevious scan was 6 months ago.",
+        }
+        self._panel._freeform_tab.load_data(sample)
+        slicer.util.infoDisplay(
+            "Loaded sample JSON data into the Freeform JSON tab.",
+            "Test Harness",
+        )
+
+    def _on_print_json(self):
+        """Print current freeform JSON data to the Python console."""
+        import json as json_mod
+        data = self._panel._freeform_tab.get_data()
+        print(json_mod.dumps(data, indent=2))
+        slicer.util.infoDisplay(
+            "Current JSON data printed to the Python console.",
             "Test Harness",
         )
 

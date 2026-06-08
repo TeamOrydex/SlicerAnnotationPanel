@@ -210,6 +210,10 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if record.segmentation:
             self._segmentation_tab.load_segmentation(record.segmentation)
 
+        # Load freeform data
+        if record.freeform_data:
+            self._freeform_tab.load_data(record.freeform_data)
+
         if record.status in ("submitted", "approved", "rejected"):
             self._set_tabs_read_only(True)
 
@@ -248,6 +252,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         """Collect all tab data into the record."""
         self._record.rois = self._roi_tab.get_roi_annotations()
         self._record.segmentation = self._segmentation_tab.get_segmentation_data()
+        self._record.freeform_data = self._freeform_tab.get_data()
 
     def _on_save_draft(self):
         filepath = qt.QFileDialog.getSaveFileName(
