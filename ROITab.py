@@ -14,8 +14,10 @@ logger = logging.getLogger(__name__)
 
 # Maps ROI type names to their Slicer MRML node class names.
 # Checked at runtime; unavailable types get their button disabled.
+# Note: Slicer's vtkMRMLMarkupsROINode is always box-shaped (no native ellipse).
+# Ellipse uses a ClosedCurveNode — user draws an elliptical closed contour.
 MARKUP_NODE_CLASSES = {
-    "ellipse": "vtkMRMLMarkupsROINode",
+    "ellipse": "vtkMRMLMarkupsClosedCurveNode",
     "rectangle": "vtkMRMLMarkupsROINode",
     "polygon": "vtkMRMLMarkupsClosedCurveNode",
     "freehand_curve": "vtkMRMLMarkupsCurveNode",
@@ -225,19 +227,6 @@ class ROITab(qt.QWidget):
         selected_label = self._get_selected_label()
         node.SetName(f"ROI_{selected_label}_{tool_id}" if selected_label else f"ROI_{tool_id}")
 
-        # Configure ROI-specific settings
-        if tool_id == "ellipse" and hasattr(node, "SetROIType"):
-            # Some Slicer versions support SetROIType for ellipsoid
-            try:
-                node.SetROIType(node.ROITypeClosedSurface if hasattr(node, "ROITypeClosedSurface") else 0)
-            except Exception:
-                pass
-        elif tool_id == "rectangle" and hasattr(node, "SetROIType"):
-            try:
-                node.SetROIType(node.ROITypeBox if hasattr(node, "ROITypeBox") else 1)
-            except Exception:
-                pass
-
         # Set color on display node
         display_node = node.GetDisplayNode()
         if display_node:
@@ -263,12 +252,23 @@ class ROITab(qt.QWidget):
 
     def _deactivate_tool(self):
         """Cancel placement mode and clean up."""
+        active = self._active_tool
         self._active_tool = None
         try:
             interaction_node = slicer.app.applicationLogic().GetInteractionNode()
             interaction_node.SetCurrentInteractionMode(interaction_node.ViewTransform)
         except Exception:
             pass
+
+        # For multi-point tools (ellipse/polygon/freehand), finalize if enough points exist
+        if self._placement_node and active in ("ellipse", "polygon", "freehand_curve"):
+            try:
+                if self._placement_node.GetNumberOfControlPoints() >= 3:
+                    self._finalize_roi(self._placement_node, active)
+                    self._placement_node = None
+                    return
+            except Exception:
+                pass
 
         # If the placement node has no control points, remove it
         if self._placement_node:
@@ -303,17 +303,16 @@ class ROITab(qt.QWidget):
         if node is None:
             return
 
-        # For line/ROI nodes, we finalize after expected points are placed.
-        # For curves/polygons, user completes placement by deactivating the tool.
-        # We record an ROI once the tool is deactivated or sufficient points exist.
+        # Line: finalize after 2 points.
+        # Rectangle (ROINode): finalize on first interaction end.
+        # Ellipse, polygon, freehand: user draws multiple points, finalized on tool deactivation.
         tool_id = self._active_tool
-        if tool_id in ("line",) and node.GetNumberOfControlPoints() >= 2:
+        if tool_id == "line" and node.GetNumberOfControlPoints() >= 2:
             self._finalize_roi(node, tool_id)
             self._deactivate_tool()
             self._uncheck_all_tools()
-        elif tool_id in ("ellipse", "rectangle"):
-            # ROI nodes are fully defined after placement
-            # They use a bounding-box interaction; finalize on first interaction end
+        elif tool_id == "rectangle":
+            # vtkMRMLMarkupsROINode uses bounding-box interaction; finalize on interaction end
             self._add_node_observer(
                 node,
                 slicer.vtkMRMLMarkupsNode.PointEndInteractionEvent,
@@ -784,7 +783,7 @@ class ROITab(qt.QWidget):
         Finalize the current placement (for polygon/freehand which need
         explicit completion). Called when switching tabs or deactivating tool.
         """
-        if self._placement_node and self._active_tool in ("polygon", "freehand_curve"):
+        if self._placement_node and self._active_tool in ("ellipse", "polygon", "freehand_curve"):
             if self._placement_node.GetNumberOfControlPoints() >= 2:
                 self._finalize_roi(self._placement_node, self._active_tool)
         self._deactivate_tool()
