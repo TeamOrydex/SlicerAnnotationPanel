@@ -250,7 +250,12 @@ class ROITab(qt.QWidget):
         selection_node.SetActivePlaceNodeID(node.GetID())
         interaction_node = slicer.app.applicationLogic().GetInteractionNode()
         interaction_node.SetCurrentInteractionMode(interaction_node.Place)
-        interaction_node.SetPlaceModePersistence(True)
+        # Rectangle/line: single placement (Slicer exits placement after shape is complete)
+        # Polygon/ellipse/freehand: persistent (user places multiple points, right-clicks to finish)
+        if tool_id in ("rectangle", "line"):
+            interaction_node.SetPlaceModePersistence(False)
+        else:
+            interaction_node.SetPlaceModePersistence(True)
 
         # Observe interaction node: when user right-clicks, Slicer exits
         # placement mode — we detect this and finalize the shape.
