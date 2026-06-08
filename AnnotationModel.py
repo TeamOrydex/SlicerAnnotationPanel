@@ -73,26 +73,77 @@ class ROIAnnotation:
 
 
 @dataclass
-class SegmentationData:
-    """Segmentation mask data. Placeholder -- will be fleshed out in Phase 3."""
-    format: str = "rle"
-    labels: List[Dict[str, str]] = field(default_factory=list)
-    slices: Dict[int, str] = field(default_factory=dict)
+class SegmentLabel:
+    """A single segment (label class) within the segmentation."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = ""
+    color: str = "#ff0000"
+    segment_id: str = ""        # Slicer's internal segment ID (e.g., "Segment_1")
+    description: str = ""
 
     def to_dict(self) -> dict:
         return {
-            "format": self.format,
-            "labels": self.labels,
-            "slices": {str(k): v for k, v in self.slices.items()},
+            "id": self.id,
+            "name": self.name,
+            "color": self.color,
+            "segment_id": self.segment_id,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SegmentLabel":
+        return cls(
+            id=data.get("id", str(uuid.uuid4())),
+            name=data.get("name", ""),
+            color=data.get("color", "#ff0000"),
+            segment_id=data.get("segment_id", ""),
+            description=data.get("description", ""),
+        )
+
+
+@dataclass
+class SegmentationData:
+    """
+    Segmentation mask data for the annotation.
+    The actual voxel data lives in the Slicer scene as a vtkMRMLSegmentationNode.
+    This dataclass stores metadata and export references.
+    """
+    labels: List[SegmentLabel] = field(default_factory=list)
+
+    export_format: str = "nrrd"         # "nrrd" or "nifti"
+    export_filepath: str = ""
+
+    source_volume_node_id: str = ""
+
+    # Runtime reference (not serialized)
+    segmentation_node_id: str = ""
+
+    # Statistics
+    total_voxel_count: int = 0
+    per_label_voxel_counts: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        """Serialize to dict. Excludes segmentation_node_id (runtime only)."""
+        return {
+            "labels": [lbl.to_dict() for lbl in self.labels],
+            "export_format": self.export_format,
+            "export_filepath": self.export_filepath,
+            "source_volume_node_id": self.source_volume_node_id,
+            "total_voxel_count": self.total_voxel_count,
+            "per_label_voxel_counts": dict(self.per_label_voxel_counts),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "SegmentationData":
-        slices = {int(k): v for k, v in data.get("slices", {}).items()}
+        labels = [SegmentLabel.from_dict(lbl) for lbl in data.get("labels", [])]
         return cls(
-            format=data.get("format", "rle"),
-            labels=data.get("labels", []),
-            slices=slices,
+            labels=labels,
+            export_format=data.get("export_format", "nrrd"),
+            export_filepath=data.get("export_filepath", ""),
+            source_volume_node_id=data.get("source_volume_node_id", ""),
+            segmentation_node_id="",
+            total_voxel_count=data.get("total_voxel_count", 0),
+            per_label_voxel_counts=data.get("per_label_voxel_counts", {}),
         )
 
 

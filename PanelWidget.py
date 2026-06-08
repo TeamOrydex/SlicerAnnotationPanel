@@ -173,10 +173,13 @@ class AnnotationPanelRootWidget(qt.QWidget):
     # ─── Tab Switching ───────────────────────────────────────────────────
 
     def _on_tab_changed(self, index):
-        """Cancel ROI placement when leaving the ROI tab."""
+        """Cancel active tools when leaving ROI or Segmentation tabs."""
         roi_tab_index = self._tab_widget.indexOf(self._roi_tab)
+        seg_tab_index = self._tab_widget.indexOf(self._segmentation_tab)
         if index != roi_tab_index:
             self._roi_tab.cancel_placement()
+        if index != seg_tab_index:
+            self._segmentation_tab.deactivate_effect()
 
     # ─── Public API ──────────────────────────────────────────────────────
 
@@ -187,7 +190,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._series_label.setText(f"Series: {series_id}")
 
     def get_record(self):
-        self._collect_roi_data()
+        self._collect_all_data()
         return self._record
 
     def set_record(self, record):
@@ -203,6 +206,10 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if record.rois:
             self._roi_tab.load_rois(record.rois)
 
+        # Load segmentation
+        if record.segmentation:
+            self._segmentation_tab.load_segmentation(record.segmentation)
+
         if record.status in ("submitted", "approved", "rejected"):
             self._set_tabs_read_only(True)
 
@@ -216,6 +223,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
     def cleanup(self):
         """Clean up observers when the panel is destroyed."""
         self._roi_tab.cleanup()
+        self._segmentation_tab.cleanup()
 
     # ─── Mode Switching ──────────────────────────────────────────────────
 
@@ -236,9 +244,10 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     # ─── Actions ─────────────────────────────────────────────────────────
 
-    def _collect_roi_data(self):
-        """Collect ROI annotations from the tab into the record."""
+    def _collect_all_data(self):
+        """Collect all tab data into the record."""
         self._record.rois = self._roi_tab.get_roi_annotations()
+        self._record.segmentation = self._segmentation_tab.get_segmentation_data()
 
     def _on_save_draft(self):
         filepath = qt.QFileDialog.getSaveFileName(
@@ -246,14 +255,28 @@ class AnnotationPanelRootWidget(qt.QWidget):
         )
         if not filepath:
             return
-        self._collect_roi_data()
+        self._collect_all_data()
         self._record.status = "draft"
         with open(filepath, "w") as f:
             f.write(self._record.to_json())
         self._update_status_display()
 
     def _on_submit(self):
-        self._collect_roi_data()
+        self._collect_all_data()
+
+        # Remind annotator to export segmentation mask if applicable
+        seg = self._record.segmentation
+        if seg and seg.labels and not seg.export_filepath:
+            result = qt.QMessageBox.question(
+                self,
+                "Export Segmentation?",
+                "You have segmentation data but haven't exported the mask file.\n"
+                "Submit anyway?",
+                qt.QMessageBox.Yes | qt.QMessageBox.No,
+            )
+            if result == qt.QMessageBox.No:
+                return
+
         self._record.status = "submitted"
         self._update_status_display()
         self._set_tabs_read_only(True)

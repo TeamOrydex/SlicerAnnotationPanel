@@ -49,14 +49,20 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         self.layout.addWidget(self._load_btn)
 
         self._sample_roi_btn = qt.QPushButton("Add Sample ROIs")
-        self._sample_roi_btn.setStyleSheet(
-            "QPushButton { padding: 8px 16px; }"
-        )
+        self._sample_roi_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
         self._sample_roi_btn.setToolTip(
             "Programmatically create sample markup nodes to test the ROI tab"
         )
         self._sample_roi_btn.clicked.connect(self._on_add_sample_rois)
         self.layout.addWidget(self._sample_roi_btn)
+
+        self._sample_seg_btn = qt.QPushButton("Add Sample Segmentation")
+        self._sample_seg_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
+        self._sample_seg_btn.setToolTip(
+            "Create a sample segmentation with sphere segments"
+        )
+        self._sample_seg_btn.clicked.connect(self._on_add_sample_segmentation)
+        self.layout.addWidget(self._sample_seg_btn)
 
         separator = qt.QFrame()
         separator.setFrameShape(qt.QFrame.HLine)
@@ -107,24 +113,69 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
                     {"x": 5.0, "y": -5.0, "z": 0.0},
                 ],
             ),
-            ROIAnnotation(
-                roi_type="ellipse",
-                label="Tumor",
-                color="#0000ff",
-                slice_view="Red",
-                slice_index=0,
-                control_points=[
-                    {"x": -30.0, "y": 30.0, "z": 0.0},
-                ],
-                radii=[15.0, 10.0],
-            ),
         ]
 
         roi_tab = self._panel._roi_tab
         roi_tab.load_rois(sample_rois)
+        slicer.util.infoDisplay(
+            f"Added {len(sample_rois)} sample ROIs.",
+            "Test Harness",
+        )
+
+    def _on_add_sample_segmentation(self):
+        """Create a sample segmentation with sphere segments for testing."""
+        import vtk
+
+        # Get the first volume node in the scene
+        volume_node = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
+        if volume_node is None:
+            slicer.util.warningDisplay(
+                "Please load a volume first (e.g., MRHead).",
+                "Test Harness",
+            )
+            return
+
+        seg_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+        seg_node.CreateDefaultDisplayNodes()
+        seg_node.SetReferenceImageGeometryParameterFromVolumeNode(volume_node)
+        seg_node.SetName("TestSegmentation")
+
+        # Add sphere segment: Tumor
+        sphere1 = vtk.vtkSphereSource()
+        sphere1.SetCenter(0, 0, 0)
+        sphere1.SetRadius(15)
+        sphere1.SetThetaResolution(20)
+        sphere1.SetPhiResolution(20)
+        sphere1.Update()
+        seg_node.AddSegmentFromClosedSurfaceRepresentation(
+            sphere1.GetOutput(), "Tumor", [1.0, 0.0, 0.0]
+        )
+
+        # Add sphere segment: Edema
+        sphere2 = vtk.vtkSphereSource()
+        sphere2.SetCenter(30, 20, 0)
+        sphere2.SetRadius(10)
+        sphere2.SetThetaResolution(20)
+        sphere2.SetPhiResolution(20)
+        sphere2.Update()
+        seg_node.AddSegmentFromClosedSurfaceRepresentation(
+            sphere2.GetOutput(), "Edema", [1.0, 1.0, 0.0]
+        )
+
+        # Link to the segmentation tab
+        seg_tab = self._panel._segmentation_tab
+        seg_tab._segmentation_node = seg_node
+        seg_tab._volume_selector.setCurrentNode(volume_node)
+        seg_tab._link_editor_to_nodes(volume_node)
+        seg_tab._refresh_segment_table()
+        seg_tab._refresh_active_combo()
+
+        display_node = seg_node.GetDisplayNode()
+        if display_node:
+            display_node.SetOpacity(0.5)
 
         slicer.util.infoDisplay(
-            f"Added {len(sample_rois)} sample ROIs (line, polygon, ellipse).",
+            "Added sample segmentation (Tumor + Edema spheres).",
             "Test Harness",
         )
 
