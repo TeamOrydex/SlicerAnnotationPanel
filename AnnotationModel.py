@@ -7,33 +7,68 @@ from datetime import datetime, timezone
 
 @dataclass
 class ROIAnnotation:
-    """Single ROI annotation. Placeholder -- will be fleshed out in Phase 2."""
-    id: str = ""
-    roi_type: str = ""          # "ellipse", "rectangle", "polygon"
-    slice_index: int = 0
-    coords: Dict[str, Any] = field(default_factory=dict)
+    """
+    A single ROI annotation drawn on the scan.
+    Coordinates are stored in RAS (Right-Anterior-Superior) world coordinates,
+    which is Slicer's native coordinate system for markups.
+    """
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    roi_type: str = ""
+    # roi_type values: "ellipse", "rectangle", "polygon", "freehand_curve", "line"
+
     label: str = ""
     color: str = "#ff0000"
 
+    # Slice context
+    slice_view: str = ""        # "Red", "Green", "Yellow"
+    slice_index: int = 0
+
+    # Geometry: ordered list of control points (3D RAS)
+    # Each point is {"x": float, "y": float, "z": float}
+    control_points: list = field(default_factory=list)
+
+    # Ellipse/rectangle-specific
+    radii: list = field(default_factory=list)        # [rx, ry] for ellipse, [w, h] for rect
+    orientation: list = field(default_factory=list)   # 3x3 rotation matrix as flat 9-element list
+
+    # Metadata
+    description: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    # Runtime-only reference to Slicer MRML node (excluded from serialization)
+    mrml_node_id: str = ""
+
     def to_dict(self) -> dict:
+        """Serialize to a plain dict. Excludes mrml_node_id (runtime only)."""
         return {
             "id": self.id,
             "roi_type": self.roi_type,
-            "slice_index": self.slice_index,
-            "coords": self.coords,
             "label": self.label,
             "color": self.color,
+            "slice_view": self.slice_view,
+            "slice_index": self.slice_index,
+            "control_points": list(self.control_points),
+            "radii": list(self.radii),
+            "orientation": list(self.orientation),
+            "description": self.description,
+            "created_at": self.created_at,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "ROIAnnotation":
         return cls(
-            id=data.get("id", ""),
+            id=data.get("id", str(uuid.uuid4())),
             roi_type=data.get("roi_type", ""),
-            slice_index=data.get("slice_index", 0),
-            coords=data.get("coords", {}),
             label=data.get("label", ""),
             color=data.get("color", "#ff0000"),
+            slice_view=data.get("slice_view", ""),
+            slice_index=data.get("slice_index", 0),
+            control_points=data.get("control_points", []),
+            radii=data.get("radii", []),
+            orientation=data.get("orientation", []),
+            description=data.get("description", ""),
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            mrml_node_id="",
         )
 
 

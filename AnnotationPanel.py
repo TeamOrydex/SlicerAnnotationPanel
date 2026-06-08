@@ -43,7 +43,8 @@ class AnnotationPanelWidget(ScriptedLoadableModuleWidget):
         self.layout.addStretch(1)
 
     def cleanup(self):
-        pass
+        if hasattr(self, "panel"):
+            self.panel.cleanup()
 
 
 class AnnotationPanelLogic(ScriptedLoadableModuleLogic):

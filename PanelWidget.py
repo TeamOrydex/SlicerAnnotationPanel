@@ -1,6 +1,6 @@
 import qt
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from AnnotationModel import AnnotationRecord
 from ClassLabelTab import ClassLabelTab
@@ -31,6 +31,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._setup_ui()
         self._update_status_display()
         self._update_action_bar()
+        self._connect_label_sync()
 
     # ─── UI Setup ────────────────────────────────────────────────────────
 
@@ -47,15 +48,15 @@ class AnnotationPanelRootWidget(qt.QWidget):
         header_layout = qt.QVBoxLayout(header_frame)
 
         info_row = qt.QHBoxLayout()
-        self._study_label = qt.QLabel("Study: —")
-        self._series_label = qt.QLabel("Series: —")
+        self._study_label = qt.QLabel("Study: \u2014")
+        self._series_label = qt.QLabel("Series: \u2014")
         info_row.addWidget(self._study_label)
         info_row.addWidget(self._series_label)
         info_row.addStretch()
         header_layout.addLayout(info_row)
 
         status_row = qt.QHBoxLayout()
-        self._status_label = qt.QLabel("Status: ● Draft")
+        self._status_label = qt.QLabel("Status: \u25cf Draft")
         self._status_label.setStyleSheet("font-weight: bold;")
         status_row.addWidget(self._status_label)
         status_row.addStretch()
@@ -84,7 +85,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._tab_widget = qt.QTabWidget()
 
         self._class_label_tab = ClassLabelTab(annotation_record=self._record)
-        self._roi_tab = ROITab()
+        self._roi_tab = ROITab(annotation_record=self._record)
         self._segmentation_tab = SegmentationTab()
         self._freeform_tab = FreeformJsonTab()
 
@@ -92,6 +93,9 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._tab_widget.addTab(self._roi_tab, "ROI")
         self._tab_widget.addTab(self._segmentation_tab, "Segmentation")
         self._tab_widget.addTab(self._freeform_tab, "JSON")
+
+        # Cancel ROI placement when switching away from the ROI tab
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
         parent_layout.addWidget(self._tab_widget)
 
@@ -136,6 +140,44 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         parent_layout.addWidget(self._action_container)
 
+    # ─── Label Synchronization ───────────────────────────────────────────
+    # The ClassLabelTab's checkbox list is the source of truth for available labels.
+    # We sync the label list to the ROI tab's dropdown whenever checkboxes change.
+
+    def _connect_label_sync(self):
+        """Connect ClassLabelTab checkbox changes to ROI tab label refresh."""
+        # Monkey-patch the ClassLabelTab's _on_checkbox_toggled and _on_add_custom
+        # to trigger a label sync. This avoids modifying ClassLabelTab's interface.
+        original_toggled = self._class_label_tab._on_checkbox_toggled
+        original_add = self._class_label_tab._on_add_custom
+
+        def patched_toggled(checked):
+            original_toggled(checked)
+            self._sync_labels_to_roi_tab()
+
+        def patched_add():
+            original_add()
+            self._sync_labels_to_roi_tab()
+
+        self._class_label_tab._on_checkbox_toggled = patched_toggled
+        self._class_label_tab._on_add_custom = patched_add
+
+        # Initial sync
+        self._sync_labels_to_roi_tab()
+
+    def _sync_labels_to_roi_tab(self):
+        """Push the current label list from ClassLabelTab to ROITab's combo box."""
+        all_labels = list(self._class_label_tab._checkboxes.keys())
+        self._roi_tab.refresh_labels(all_labels)
+
+    # ─── Tab Switching ───────────────────────────────────────────────────
+
+    def _on_tab_changed(self, index):
+        """Cancel ROI placement when leaving the ROI tab."""
+        roi_tab_index = self._tab_widget.indexOf(self._roi_tab)
+        if index != roi_tab_index:
+            self._roi_tab.cancel_placement()
+
     # ─── Public API ──────────────────────────────────────────────────────
 
     def set_study_info(self, study_id, series_id):
@@ -145,30 +187,42 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._series_label.setText(f"Series: {series_id}")
 
     def get_record(self):
+        self._collect_roi_data()
         return self._record
 
     def set_record(self, record):
         self._record = record
         self._class_label_tab.set_annotation_record(record)
+        self._roi_tab.set_annotation_record(record)
         self._study_label.setText(f"Study: {record.study_id}")
         self._series_label.setText(f"Series: {record.series_id}")
         self._update_status_display()
         self._review_bar.show_review_info(record)
+
+        # Load ROIs into the scene
+        if record.rois:
+            self._roi_tab.load_rois(record.rois)
+
         if record.status in ("submitted", "approved", "rejected"):
             self._set_tabs_read_only(True)
 
     def load_annotation(self, filepath):
-        """Read a JSON file and populate the panel."""
+        """Read a JSON file and populate the entire panel."""
         with open(filepath, "r") as f:
             data = json.load(f)
         record = AnnotationRecord.from_dict(data)
         self.set_record(record)
+
+    def cleanup(self):
+        """Clean up observers when the panel is destroyed."""
+        self._roi_tab.cleanup()
 
     # ─── Mode Switching ──────────────────────────────────────────────────
 
     def _on_mode_changed(self, checked):
         self._is_reviewer_mode = self._reviewer_radio.isChecked()
         self._update_action_bar()
+        self._set_tabs_read_only(self._is_reviewer_mode)
         if self._is_reviewer_mode:
             self._review_bar.show_review_info(self._record)
 
@@ -182,18 +236,24 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     # ─── Actions ─────────────────────────────────────────────────────────
 
+    def _collect_roi_data(self):
+        """Collect ROI annotations from the tab into the record."""
+        self._record.rois = self._roi_tab.get_roi_annotations()
+
     def _on_save_draft(self):
         filepath = qt.QFileDialog.getSaveFileName(
             self, "Save Annotation", "", "JSON Files (*.json)"
         )
         if not filepath:
             return
+        self._collect_roi_data()
         self._record.status = "draft"
         with open(filepath, "w") as f:
             f.write(self._record.to_json())
         self._update_status_display()
 
     def _on_submit(self):
+        self._collect_roi_data()
         self._record.status = "submitted"
         self._update_status_display()
         self._set_tabs_read_only(True)
@@ -201,14 +261,14 @@ class AnnotationPanelRootWidget(qt.QWidget):
     def _on_approve(self):
         self._record.status = "approved"
         self._record.reviewed_by = "reviewer"
-        self._record.reviewed_at = datetime.utcnow().isoformat()
+        self._record.reviewed_at = datetime.now(timezone.utc).isoformat()
         self._update_status_display()
         self._review_bar.show_review_info(self._record)
 
     def _on_reject(self, comments):
         self._record.status = "rejected"
         self._record.reviewed_by = "reviewer"
-        self._record.reviewed_at = datetime.utcnow().isoformat()
+        self._record.reviewed_at = datetime.now(timezone.utc).isoformat()
         self._record.review_comments = comments
         self._update_status_display()
         self._review_bar.show_review_info(self._record)
@@ -218,7 +278,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
     def _update_status_display(self):
         status = self._record.status
         color = STATUS_COLORS.get(status, "#888888")
-        self._status_label.setText(f"Status: ● {status.capitalize()}")
+        self._status_label.setText(f"Status: \u25cf {status.capitalize()}")
         self._status_label.setStyleSheet(f"font-weight: bold; color: {color};")
 
     def _set_tabs_read_only(self, enabled):
