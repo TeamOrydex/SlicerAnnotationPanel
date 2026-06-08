@@ -14,15 +14,17 @@ logger = logging.getLogger(__name__)
 
 # Maps ROI type names to their Slicer MRML node class names.
 # Checked at runtime; unavailable types get their button disabled.
-# Note: Slicer's vtkMRMLMarkupsROINode is always box-shaped (no native ellipse).
-# Ellipse uses a ClosedCurveNode — user draws an elliptical closed contour.
+# Ellipse uses ROINode for placement (drag interaction), then converts
+# the bounding box into a ClosedCurveNode with elliptical control points.
 MARKUP_NODE_CLASSES = {
-    "ellipse": "vtkMRMLMarkupsClosedCurveNode",
+    "ellipse": "vtkMRMLMarkupsROINode",
     "rectangle": "vtkMRMLMarkupsROINode",
     "polygon": "vtkMRMLMarkupsClosedCurveNode",
     "freehand_curve": "vtkMRMLMarkupsCurveNode",
     "line": "vtkMRMLMarkupsLineNode",
 }
+
+NUM_ELLIPSE_POINTS = 24
 
 DEFAULT_ROI_LABELS = [
     "Normal",
@@ -45,6 +47,31 @@ def hex_to_rgb_float(hex_color):
 def rgb_float_to_hex(r, g, b):
     """Convert (r, g, b) floats in [0, 1] to '#rrggbb'."""
     return "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+
+
+def generate_ellipse_points(center, radii, normal_axis=2, num_points=NUM_ELLIPSE_POINTS):
+    """
+    Generate control points for an ellipse inscribed in a bounding box.
+    center: [cx, cy, cz], radii: [rx, ry] (semi-axes).
+    normal_axis: which axis is the slice normal (0=x, 1=y, 2=z).
+    Returns list of {"x", "y", "z"} dicts.
+    """
+    import math
+    points = []
+    for i in range(num_points):
+        angle = 2.0 * math.pi * i / num_points
+        pt = [center[0], center[1], center[2]]
+        if normal_axis == 2:  # axial slice (x-y plane)
+            pt[0] += radii[0] * math.cos(angle)
+            pt[1] += radii[1] * math.sin(angle)
+        elif normal_axis == 1:  # coronal slice (x-z plane)
+            pt[0] += radii[0] * math.cos(angle)
+            pt[2] += radii[1] * math.sin(angle)
+        else:  # sagittal slice (y-z plane)
+            pt[1] += radii[0] * math.cos(angle)
+            pt[2] += radii[1] * math.sin(angle)
+        points.append({"x": pt[0], "y": pt[1], "z": pt[2]})
+    return points
 
 
 class ROITab(qt.QWidget):
@@ -260,8 +287,8 @@ class ROITab(qt.QWidget):
         except Exception:
             pass
 
-        # For multi-point tools (ellipse/polygon/freehand), finalize if enough points exist
-        if self._placement_node and active in ("ellipse", "polygon", "freehand_curve"):
+        # For multi-point tools (polygon/freehand), finalize if enough points exist
+        if self._placement_node and active in ("polygon", "freehand_curve"):
             try:
                 if self._placement_node.GetNumberOfControlPoints() >= 3:
                     self._finalize_roi(self._placement_node, active)
@@ -304,14 +331,14 @@ class ROITab(qt.QWidget):
             return
 
         # Line: finalize after 2 points.
-        # Rectangle (ROINode): finalize on first interaction end.
-        # Ellipse, polygon, freehand: user draws multiple points, finalized on tool deactivation.
+        # Ellipse/Rectangle (ROINode): finalize on first interaction end.
+        # Polygon, freehand: user draws multiple points, finalized on tool deactivation.
         tool_id = self._active_tool
         if tool_id == "line" and node.GetNumberOfControlPoints() >= 2:
             self._finalize_roi(node, tool_id)
             self._deactivate_tool()
             self._uncheck_all_tools()
-        elif tool_id == "rectangle":
+        elif tool_id in ("ellipse", "rectangle"):
             # vtkMRMLMarkupsROINode uses bounding-box interaction; finalize on interaction end
             self._add_node_observer(
                 node,
@@ -325,9 +352,84 @@ class ROITab(qt.QWidget):
         if node is None:
             return
         tool_id = self._active_tool or self._guess_tool_type(node)
-        self._finalize_roi(node, tool_id)
+
+        if tool_id == "ellipse":
+            self._convert_roi_to_ellipse(node)
+        else:
+            self._finalize_roi(node, tool_id)
+
         self._deactivate_tool()
         self._uncheck_all_tools()
+
+    def _convert_roi_to_ellipse(self, roi_node):
+        """
+        Convert a vtkMRMLMarkupsROINode bounding box into an elliptical
+        ClosedCurveNode. Removes the temporary ROI node after conversion.
+        """
+        # Extract center and size from the ROI node
+        center = [0.0, 0.0, 0.0]
+        roi_node.GetCenter(center)
+        size = [0.0, 0.0, 0.0]
+        roi_node.GetSize(size)
+        radii = [size[0] / 2.0, size[1] / 2.0]
+
+        # Determine slice normal axis from the active view
+        normal_axis = self._get_slice_normal_axis()
+
+        # Generate elliptical points
+        ellipse_points = generate_ellipse_points(center, radii, normal_axis)
+
+        # Create a ClosedCurveNode with these points
+        curve_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsClosedCurveNode")
+        if not curve_node:
+            logger.error("Failed to create ClosedCurveNode for ellipse")
+            return
+
+        selected_label = self._get_selected_label()
+        curve_node.SetName(f"ROI_{selected_label}_ellipse" if selected_label else "ROI_ellipse")
+
+        for pt in ellipse_points:
+            curve_node.AddControlPoint(pt["x"], pt["y"], pt["z"])
+
+        # Apply color
+        display_node = curve_node.GetDisplayNode()
+        if display_node:
+            r, g, b = hex_to_rgb_float(self._current_color)
+            display_node.SetSelectedColor(r, g, b)
+            display_node.SetColor(r, g, b)
+
+        # Remove the temporary ROI node
+        temp_id = roi_node.GetID()
+        self._remove_node_observers(temp_id)
+        slicer.mrmlScene.RemoveNode(roi_node)
+
+        # Finalize the ellipse curve as an ROIAnnotation
+        roi_annotation = ROIAnnotation()
+        roi_annotation.roi_type = "ellipse"
+        roi_annotation.label = selected_label
+        roi_annotation.color = self._current_color
+        roi_annotation.mrml_node_id = curve_node.GetID()
+        roi_annotation.slice_view = self._get_active_slice_view()
+        roi_annotation.slice_index = self._get_current_slice_index()
+        roi_annotation.control_points = ellipse_points
+        roi_annotation.radii = radii
+
+        self._roi_annotations.append(roi_annotation)
+        self._update_table()
+        self._sync_to_record()
+
+    def _get_slice_normal_axis(self):
+        """Determine which axis is normal to the current slice view (0=x, 1=y, 2=z)."""
+        try:
+            layout_manager = slicer.app.layoutManager()
+            # Check which view has focus, default to Red (axial = z-normal)
+            for name, axis in [("Red", 2), ("Green", 1), ("Yellow", 0)]:
+                widget = layout_manager.sliceWidget(name)
+                if widget and widget.hasFocus():
+                    return axis
+        except Exception:
+            pass
+        return 2  # Default: axial (z-normal)
 
     def _guess_tool_type(self, node):
         """Infer tool type from the node class."""
@@ -733,7 +835,12 @@ class ROITab(qt.QWidget):
 
     def _create_node_from_roi(self, roi):
         """Create a Slicer markup node from an ROIAnnotation (for loading saved data)."""
-        class_name = MARKUP_NODE_CLASSES.get(roi.roi_type)
+        # Ellipse is stored as a ClosedCurveNode (not the ROINode used for placement)
+        if roi.roi_type == "ellipse":
+            class_name = "vtkMRMLMarkupsClosedCurveNode"
+        else:
+            class_name = MARKUP_NODE_CLASSES.get(roi.roi_type)
+
         if not class_name:
             logger.warning(f"Unknown ROI type: {roi.roi_type}")
             return None
@@ -753,7 +860,7 @@ class ROITab(qt.QWidget):
         for pt in roi.control_points:
             node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
 
-        # Set size for ROI nodes
+        # Set size for ROI nodes (rectangle)
         if roi.radii and hasattr(node, "SetSize"):
             try:
                 size = [roi.radii[0] * 2, roi.radii[1] * 2, 0.0]
@@ -783,7 +890,7 @@ class ROITab(qt.QWidget):
         Finalize the current placement (for polygon/freehand which need
         explicit completion). Called when switching tabs or deactivating tool.
         """
-        if self._placement_node and self._active_tool in ("ellipse", "polygon", "freehand_curve"):
+        if self._placement_node and self._active_tool in ("polygon", "freehand_curve"):
             if self._placement_node.GetNumberOfControlPoints() >= 2:
                 self._finalize_roi(self._placement_node, self._active_tool)
         self._deactivate_tool()
