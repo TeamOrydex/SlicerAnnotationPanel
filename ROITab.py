@@ -252,8 +252,58 @@ class ROITab(qt.QWidget):
         interaction_node.SetCurrentInteractionMode(interaction_node.Place)
         interaction_node.SetPlaceModePersistence(True)
 
+        # Observe interaction node: when user right-clicks, Slicer exits
+        # placement mode — we detect this and finalize the shape.
+        self._observe_interaction_mode_change(interaction_node)
+
+    def _observe_interaction_mode_change(self, interaction_node):
+        """Watch for Slicer exiting placement mode (e.g. user right-clicks)."""
+        # Remove any previous interaction observer
+        self._remove_interaction_observer()
+        tag = interaction_node.AddObserver(
+            interaction_node.InteractionModeChangedEvent,
+            self._on_interaction_mode_changed,
+        )
+        self._interaction_observer = (interaction_node, tag)
+
+    def _remove_interaction_observer(self):
+        """Remove the interaction mode observer if active."""
+        if hasattr(self, "_interaction_observer") and self._interaction_observer:
+            node, tag = self._interaction_observer
+            try:
+                node.RemoveObserver(tag)
+            except Exception:
+                pass
+            self._interaction_observer = None
+
+    def _on_interaction_mode_changed(self, caller, event):
+        """Called when Slicer's interaction mode changes (e.g. right-click exits placement)."""
+        interaction_node = caller
+        if interaction_node.GetCurrentInteractionMode() != interaction_node.Place:
+            # Placement mode was exited (user right-clicked to finish)
+            self._remove_interaction_observer()
+            if self._placement_node and self._active_tool:
+                active = self._active_tool
+                self._active_tool = None
+                node = self._placement_node
+                self._placement_node = None
+
+                # Finalize based on tool type
+                if active == "rectangle" and node.GetNumberOfControlPoints() > 0:
+                    self._finalize_roi(node, active)
+                elif active in ("ellipse", "polygon", "freehand_curve") and node.GetNumberOfControlPoints() >= 3:
+                    self._finalize_roi(node, active)
+                elif node.GetNumberOfControlPoints() == 0:
+                    try:
+                        slicer.mrmlScene.RemoveNode(node)
+                    except Exception:
+                        pass
+
+                self._uncheck_all_tools()
+
     def _deactivate_tool(self):
         """Cancel placement mode and finalize pending shapes."""
+        self._remove_interaction_observer()
         active = self._active_tool
         self._active_tool = None
         try:
@@ -434,6 +484,7 @@ class ROITab(qt.QWidget):
     def cleanup(self):
         """Remove all observers. Called on tab switch or module unload."""
         self.cancel_placement()
+        self._remove_interaction_observer()
         # Remove all node observers
         for node_id in list(self._node_observers.keys()):
             self._remove_node_observers(node_id)
