@@ -278,7 +278,7 @@ class ROITab(qt.QWidget):
         interaction_node.SetPlaceModePersistence(True)
 
     def _deactivate_tool(self):
-        """Cancel placement mode and clean up."""
+        """Cancel placement mode and finalize pending shapes."""
         active = self._active_tool
         self._active_tool = None
         try:
@@ -287,8 +287,31 @@ class ROITab(qt.QWidget):
         except Exception:
             pass
 
-        # For multi-point tools (polygon/freehand), finalize if enough points exist
-        if self._placement_node and active in ("polygon", "freehand_curve"):
+        if not self._placement_node:
+            return
+
+        # Ellipse: convert ROI bounding box to elliptical closed curve
+        if active == "ellipse":
+            try:
+                if self._placement_node.GetNumberOfControlPoints() > 0:
+                    self._convert_roi_to_ellipse(self._placement_node)
+                    self._placement_node = None
+                    return
+            except Exception:
+                pass
+
+        # Rectangle: finalize the ROI node as-is
+        if active == "rectangle":
+            try:
+                if self._placement_node.GetNumberOfControlPoints() > 0:
+                    self._finalize_roi(self._placement_node, active)
+                    self._placement_node = None
+                    return
+            except Exception:
+                pass
+
+        # Polygon/freehand: finalize if enough points exist
+        if active in ("polygon", "freehand_curve"):
             try:
                 if self._placement_node.GetNumberOfControlPoints() >= 3:
                     self._finalize_roi(self._placement_node, active)
@@ -298,12 +321,11 @@ class ROITab(qt.QWidget):
                 pass
 
         # If the placement node has no control points, remove it
-        if self._placement_node:
-            try:
-                if self._placement_node.GetNumberOfControlPoints() == 0:
-                    slicer.mrmlScene.RemoveNode(self._placement_node)
-            except Exception:
-                pass
+        try:
+            if self._placement_node.GetNumberOfControlPoints() == 0:
+                slicer.mrmlScene.RemoveNode(self._placement_node)
+        except Exception:
+            pass
         self._placement_node = None
 
     # ─── Node Observation ────────────────────────────────────────────────
@@ -331,7 +353,8 @@ class ROITab(qt.QWidget):
             return
 
         # Line: finalize after 2 points.
-        # Ellipse/Rectangle (ROINode): finalize on first interaction end.
+        # Ellipse/Rectangle (ROINode): placed with one click, user resizes via handles,
+        #   finalized when tool is deactivated (click button again).
         # Polygon, freehand: user draws multiple points, finalized on tool deactivation.
         tool_id = self._active_tool
         if tool_id == "line" and node.GetNumberOfControlPoints() >= 2:
@@ -339,27 +362,13 @@ class ROITab(qt.QWidget):
             self._deactivate_tool()
             self._uncheck_all_tools()
         elif tool_id in ("ellipse", "rectangle"):
-            # vtkMRMLMarkupsROINode uses bounding-box interaction; finalize on interaction end
-            self._add_node_observer(
-                node,
-                slicer.vtkMRMLMarkupsNode.PointEndInteractionEvent,
-                self._on_roi_interaction_end,
-            )
-
-    def _on_roi_interaction_end(self, caller, event):
-        """Called when user finishes interacting with an ROI/markups node."""
-        node = caller
-        if node is None:
-            return
-        tool_id = self._active_tool or self._guess_tool_type(node)
-
-        if tool_id == "ellipse":
-            self._convert_roi_to_ellipse(node)
-        else:
-            self._finalize_roi(node, tool_id)
-
-        self._deactivate_tool()
-        self._uncheck_all_tools()
+            # ROI is placed — exit placement mode so user can resize via handles.
+            # Finalization happens when the tool button is clicked again (deactivation).
+            try:
+                interaction_node = slicer.app.applicationLogic().GetInteractionNode()
+                interaction_node.SetCurrentInteractionMode(interaction_node.ViewTransform)
+            except Exception:
+                pass
 
     def _convert_roi_to_ellipse(self, roi_node):
         """
