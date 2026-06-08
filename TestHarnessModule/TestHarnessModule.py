@@ -39,7 +39,7 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
         import qt
-        from AnnotationPanelWidget import AnnotationPanelRootWidget
+        from PanelWidget import AnnotationPanelRootWidget
 
         self._load_btn = qt.QPushButton("Load Sample Volume (MRHead)")
         self._load_btn.setStyleSheet(

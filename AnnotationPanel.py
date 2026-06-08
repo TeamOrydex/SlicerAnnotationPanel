@@ -36,7 +36,7 @@ class AnnotationPanelWidget(ScriptedLoadableModuleWidget):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
 
-        from AnnotationPanelWidget import AnnotationPanelRootWidget
+        from PanelWidget import AnnotationPanelRootWidget
 
         self.panel = AnnotationPanelRootWidget()
         self.layout.addWidget(self.panel)
