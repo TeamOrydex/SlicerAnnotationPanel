@@ -12,8 +12,9 @@ from slicer.ScriptedLoadableModule import (
 )
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-if MODULE_DIR not in sys.path:
-    sys.path.insert(0, MODULE_DIR)
+PANEL_DIR = os.path.dirname(MODULE_DIR)
+if PANEL_DIR not in sys.path:
+    sys.path.insert(0, PANEL_DIR)
 
 
 class TestHarnessModule(ScriptedLoadableModule):
