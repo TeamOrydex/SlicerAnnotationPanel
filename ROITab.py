@@ -200,6 +200,8 @@ class ROITab(qt.QWidget):
 
     def _on_tool_toggled(self, tool_id, checked):
         if checked:
+            # Finalize any pending placement from the previous tool
+            self._deactivate_tool()
             # Uncheck other buttons
             for tid, btn in self._tool_buttons.items():
                 if tid != tool_id:
@@ -639,8 +641,10 @@ class ROITab(qt.QWidget):
         color_row.addStretch()
         dlg_layout.addLayout(color_row)
 
-        # OK / Cancel
-        btn_box = qt.QDialogButtonBox(qt.QDialogButtonBox.Ok | qt.QDialogButtonBox.Cancel)
+        # Save / Cancel
+        btn_box = qt.QDialogButtonBox()
+        save_btn = btn_box.addButton("Save", qt.QDialogButtonBox.AcceptRole)
+        cancel_btn = btn_box.addButton("Cancel", qt.QDialogButtonBox.RejectRole)
         btn_box.accepted.connect(dialog.accept)
         btn_box.rejected.connect(dialog.reject)
         dlg_layout.addWidget(btn_box)
