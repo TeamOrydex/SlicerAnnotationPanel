@@ -58,6 +58,7 @@ class ROITab(qt.QWidget):
         self._record = annotation_record
         self._labels = list(labels) if labels else list(DEFAULT_ROI_LABELS)
         self._roi_annotations = []  # List[ROIAnnotation]
+        self._volume_node = None
         self._current_color = "#ff0000"
         self._active_tool = None
         self._observers = []  # (subject, tag) pairs for cleanup
@@ -479,6 +480,29 @@ class ROITab(qt.QWidget):
                 roi.mrml_node_id = node.GetID()
             self._roi_annotations.append(roi)
         self._update_table()
+
+    def set_volume(self, volume_node):
+        """Store the shared volume reference."""
+        self._volume_node = volume_node
+
+    def clear_and_unbind(self):
+        """Remove all ROI nodes from the scene, clear table, reset state."""
+        self.cancel_placement()
+        self._remove_interaction_observer()
+        for node_id in list(self._node_observers.keys()):
+            self._remove_node_observers(node_id)
+        # Remove markup nodes created by this tab
+        for roi in self._roi_annotations:
+            if roi.mrml_node_id:
+                try:
+                    node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
+                    if node:
+                        slicer.mrmlScene.RemoveNode(node)
+                except Exception:
+                    pass
+        self._roi_annotations = []
+        self._update_table()
+        self._volume_node = None
 
     def cancel_placement(self):
         """Cancel any active placement mode."""

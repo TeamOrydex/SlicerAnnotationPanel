@@ -78,7 +78,7 @@ class SegmentLabel:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     name: str = ""
     color: str = "#ff0000"
-    segment_id: str = ""        # Slicer's internal segment ID (e.g., "Segment_1")
+    segment_id: str = ""
     description: str = ""
 
     def to_dict(self) -> dict:
@@ -110,7 +110,7 @@ class SegmentationData:
     """
     labels: List[SegmentLabel] = field(default_factory=list)
 
-    export_format: str = "nrrd"         # "nrrd" or "nifti"
+    export_format: str = "nrrd"
     export_filepath: str = ""
 
     source_volume_node_id: str = ""
@@ -148,6 +148,55 @@ class SegmentationData:
 
 
 @dataclass
+class ScanMetadata:
+    """
+    Metadata about the uploaded scan being annotated.
+    Stored with the annotation so the export is traceable back to its source.
+    """
+    filename: str = ""
+    filepath: str = ""
+    file_format: str = ""
+    dimensions: List[int] = field(default_factory=list)
+    spacing: List[float] = field(default_factory=list)
+    origin: List[float] = field(default_factory=list)
+    modality: str = ""
+    patient_id: str = ""
+    study_description: str = ""
+
+    # Runtime reference (not serialized)
+    volume_node_id: str = ""
+
+    def to_dict(self) -> dict:
+        """Serialize to dict. Excludes volume_node_id (runtime only)."""
+        return {
+            "filename": self.filename,
+            "filepath": self.filepath,
+            "file_format": self.file_format,
+            "dimensions": list(self.dimensions),
+            "spacing": list(self.spacing),
+            "origin": list(self.origin),
+            "modality": self.modality,
+            "patient_id": self.patient_id,
+            "study_description": self.study_description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ScanMetadata":
+        return cls(
+            filename=data.get("filename", ""),
+            filepath=data.get("filepath", ""),
+            file_format=data.get("file_format", ""),
+            dimensions=data.get("dimensions", []),
+            spacing=data.get("spacing", []),
+            origin=data.get("origin", []),
+            modality=data.get("modality", ""),
+            patient_id=data.get("patient_id", ""),
+            study_description=data.get("study_description", ""),
+            volume_node_id="",
+        )
+
+
+@dataclass
 class AnnotationRecord:
     """
     Top-level annotation record. One per study/series being annotated.
@@ -160,6 +209,9 @@ class AnnotationRecord:
     # Metadata
     created_by: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    # Scan info
+    scan: Optional[ScanMetadata] = None
 
     # Mode A -- Class Labels
     class_labels: List[str] = field(default_factory=list)
@@ -178,6 +230,7 @@ class AnnotationRecord:
             "series_id": self.series_id,
             "created_by": self.created_by,
             "created_at": self.created_at,
+            "scan": self.scan.to_dict() if self.scan else None,
             "class_labels": list(self.class_labels),
             "rois": [roi.to_dict() for roi in self.rois],
             "segmentation": self.segmentation.to_dict() if self.segmentation else None,
@@ -189,6 +242,8 @@ class AnnotationRecord:
         rois = [ROIAnnotation.from_dict(r) for r in data.get("rois", [])]
         seg_data = data.get("segmentation")
         segmentation = SegmentationData.from_dict(seg_data) if seg_data else None
+        scan_data = data.get("scan")
+        scan = ScanMetadata.from_dict(scan_data) if scan_data else None
 
         return cls(
             id=data.get("id", str(uuid.uuid4())),
@@ -196,6 +251,7 @@ class AnnotationRecord:
             series_id=data.get("series_id", ""),
             created_by=data.get("created_by", ""),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            scan=scan,
             class_labels=data.get("class_labels", []),
             rois=rois,
             segmentation=segmentation,

@@ -1,7 +1,8 @@
 """
 Segmentation tab: pixel-level painting using Slicer's Segment Editor.
 Embeds qMRMLSegmentEditorWidget and wraps it with label management,
-volume selection, export controls, and opacity adjustment.
+export controls, and opacity adjustment. The source volume is set
+externally by the panel (shared volume binding).
 """
 import qt
 import slicer
@@ -37,6 +38,7 @@ class SegmentationTab(qt.QWidget):
         super().__init__(parent)
         self._segmentation_node = None
         self._segment_editor_node = None
+        self._volume_node = None
         self._color_index = 0
         self._setup_ui()
 
@@ -45,30 +47,9 @@ class SegmentationTab(qt.QWidget):
     def _setup_ui(self):
         layout = qt.QVBoxLayout(self)
 
-        self._build_volume_selector(layout)
         self._build_label_manager(layout)
         self._build_segment_editor(layout)
         self._build_export_section(layout)
-
-    def _build_volume_selector(self, parent_layout):
-        frame = qt.QFrame()
-        frame.setFrameShape(qt.QFrame.StyledPanel)
-        fl = qt.QHBoxLayout(frame)
-
-        fl.addWidget(qt.QLabel("Source Volume:"))
-        self._volume_selector = slicer.qMRMLNodeComboBox()
-        self._volume_selector.nodeTypes = ["vtkMRMLScalarVolumeNode"]
-        self._volume_selector.selectNodeUponCreation = True
-        self._volume_selector.addEnabled = False
-        self._volume_selector.removeEnabled = False
-        self._volume_selector.noneEnabled = True
-        self._volume_selector.showHidden = False
-        self._volume_selector.setMRMLScene(slicer.mrmlScene)
-        self._volume_selector.setToolTip("Select the volume to segment")
-        self._volume_selector.connect("currentNodeChanged(vtkMRMLNode*)", self._on_volume_changed)
-        fl.addWidget(self._volume_selector)
-
-        parent_layout.addWidget(frame)
 
     def _build_label_manager(self, parent_layout):
         frame = qt.QFrame()
@@ -117,7 +98,6 @@ class SegmentationTab(qt.QWidget):
         self._segment_editor_widget.unorderedEffectsVisible = False
         fl.addWidget(self._segment_editor_widget)
 
-        # Opacity slider
         opacity_row = qt.QHBoxLayout()
         opacity_row.addWidget(qt.QLabel("Overlay opacity:"))
         self._opacity_slider = qt.QSlider(qt.Qt.Horizontal)
@@ -151,13 +131,36 @@ class SegmentationTab(qt.QWidget):
 
         parent_layout.addWidget(frame)
 
-    # ─── Volume Selection ────────────────────────────────────────────────
+    # ─── Volume Binding (called by panel) ────────────────────────────────
 
-    def _on_volume_changed(self, node):
-        if node is None:
-            return
-        self._ensure_segmentation_node(node)
-        self._link_editor_to_nodes(node)
+    def set_volume(self, volume_node):
+        """Bind a shared volume as the source for segmentation."""
+        self._volume_node = volume_node
+        self._ensure_segmentation_node(volume_node)
+        self._link_editor_to_nodes(volume_node)
+
+    def clear_and_unbind(self):
+        """Remove segmentation data and unbind the volume."""
+        self.deactivate_effect()
+        if self._segmentation_node:
+            try:
+                slicer.mrmlScene.RemoveNode(self._segmentation_node)
+            except Exception:
+                pass
+            self._segmentation_node = None
+        if self._segment_editor_node:
+            try:
+                slicer.mrmlScene.RemoveNode(self._segment_editor_node)
+            except Exception:
+                pass
+            self._segment_editor_node = None
+        self._volume_node = None
+        self._color_index = 0
+        self._segment_table.setRowCount(0)
+        self._active_segment_combo.clear()
+        self._stats_label.setText("Total labeled voxels: 0")
+
+    # ─── Internal volume linking ─────────────────────────────────────────
 
     def _ensure_segmentation_node(self, volume_node):
         """Create or reuse a segmentation node for this annotation."""
@@ -204,7 +207,7 @@ class SegmentationTab(qt.QWidget):
         name = name.strip()
 
         if self._segmentation_node is None:
-            qt.QMessageBox.warning(self, "No Volume", "Please select a source volume first.")
+            qt.QMessageBox.warning(self, "No Volume", "Please load a scan first.")
             return
 
         color = DEFAULT_COLORS[self._color_index % len(DEFAULT_COLORS)]
@@ -212,7 +215,7 @@ class SegmentationTab(qt.QWidget):
         r, g, b = hex_to_rgb_float(color)
 
         segmentation = self._segmentation_node.GetSegmentation()
-        segment_id = segmentation.AddEmptySegment(name, name, [r, g, b])
+        segmentation.AddEmptySegment(name, name, [r, g, b])
 
         self._refresh_segment_table()
         self._refresh_active_combo()
@@ -240,15 +243,12 @@ class SegmentationTab(qt.QWidget):
             color_arr = segment.GetColor()
             hex_color = rgb_float_to_hex(color_arr[0], color_arr[1], color_arr[2])
 
-            # Color swatch
             color_item = qt.QTableWidgetItem("")
             color_item.setBackground(qt.QColor(hex_color))
             self._segment_table.setItem(row, 0, color_item)
 
-            # Name
             self._segment_table.setItem(row, 1, qt.QTableWidgetItem(segment.GetName()))
 
-            # Visibility checkbox
             vis_widget = qt.QWidget()
             vis_layout = qt.QHBoxLayout(vis_widget)
             vis_layout.setContentsMargins(4, 0, 4, 0)
@@ -263,7 +263,6 @@ class SegmentationTab(qt.QWidget):
             vis_layout.addWidget(vis_cb)
             self._segment_table.setCellWidget(row, 2, vis_widget)
 
-            # Actions
             action_widget = qt.QWidget()
             action_layout = qt.QHBoxLayout(action_widget)
             action_layout.setContentsMargins(2, 2, 2, 2)
@@ -384,10 +383,8 @@ class SegmentationTab(qt.QWidget):
         if self._segmentation_node is None:
             qt.QMessageBox.warning(self, "No Segmentation", "No segmentation to export.")
             return
-
-        volume_node = self._volume_selector.currentNode()
-        if volume_node is None:
-            qt.QMessageBox.warning(self, "No Volume", "No source volume selected.")
+        if self._volume_node is None:
+            qt.QMessageBox.warning(self, "No Volume", "No source volume loaded.")
             return
 
         if fmt == "nrrd":
@@ -399,20 +396,31 @@ class SegmentationTab(qt.QWidget):
         if not filepath:
             return
 
-        # Create temporary labelmap node, export, save, then clean up
+        success = self.export_mask_to_file(filepath, fmt)
+        if success:
+            self._last_export_filepath = filepath
+            self._last_export_format = fmt
+
+    def export_mask_to_file(self, filepath, fmt="nrrd"):
+        """
+        Export the segmentation labelmap to a file.
+        Returns True if export succeeded, False otherwise.
+        """
+        if self._segmentation_node is None or self._volume_node is None:
+            return False
+
         labelmap_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
         try:
             slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(
-                self._segmentation_node, labelmap_node, volume_node
+                self._segmentation_node, labelmap_node, self._volume_node
             )
             slicer.util.saveNode(labelmap_node, filepath)
+            return True
         except Exception as e:
-            qt.QMessageBox.critical(self, "Export Failed", f"Export error: {e}")
+            logger.error(f"Export failed: {e}")
+            return False
         finally:
             slicer.mrmlScene.RemoveNode(labelmap_node)
-
-        self._last_export_filepath = filepath
-        self._last_export_format = fmt
 
     # ─── Public API ──────────────────────────────────────────────────────
 
@@ -435,33 +443,26 @@ class SegmentationTab(qt.QWidget):
                 )
                 data.labels.append(lbl)
 
-        volume_node = self._volume_selector.currentNode()
-        if volume_node:
-            data.source_volume_node_id = volume_node.GetID()
+        if self._volume_node:
+            data.source_volume_node_id = self._volume_node.GetID()
 
         if hasattr(self, "_last_export_filepath"):
             data.export_filepath = self._last_export_filepath
             data.export_format = self._last_export_format
 
-        # Compute voxel statistics
         self._compute_stats(data)
-
         return data
 
     def _compute_stats(self, data):
         """Compute voxel counts per segment."""
-        if self._segmentation_node is None:
-            return
-
-        volume_node = self._volume_selector.currentNode()
-        if volume_node is None:
+        if self._segmentation_node is None or self._volume_node is None:
             return
 
         try:
             import SegmentStatistics
             logic = SegmentStatistics.SegmentStatisticsLogic()
             logic.getParameterNode().SetParameter("Segmentation", self._segmentation_node.GetID())
-            logic.getParameterNode().SetParameter("ScalarVolume", volume_node.GetID())
+            logic.getParameterNode().SetParameter("ScalarVolume", self._volume_node.GetID())
             logic.computeStatistics()
             stats = logic.getStatistics()
 
@@ -482,16 +483,12 @@ class SegmentationTab(qt.QWidget):
             logger.warning(f"Could not compute segment statistics: {e}")
 
     def load_segmentation(self, seg_data):
-        """
-        Load a SegmentationData object: import mask file if available,
-        or create segments from label definitions.
-        """
+        """Load a SegmentationData object: import mask file or create from labels."""
         if seg_data is None:
             return
 
-        volume_node = self._volume_selector.currentNode()
+        volume_node = self._volume_node
 
-        # If an exported mask file exists, import it
         if seg_data.export_filepath:
             import os
             if os.path.exists(seg_data.export_filepath):
@@ -515,9 +512,8 @@ class SegmentationTab(qt.QWidget):
                 except Exception as e:
                     logger.error(f"Failed to load segmentation mask: {e}")
 
-        # If no file loaded, create segments from label definitions
-        if self._segmentation_node is None:
-            self._ensure_segmentation_node(volume_node or self._volume_selector.currentNode())
+        if self._segmentation_node is None and volume_node:
+            self._ensure_segmentation_node(volume_node)
 
         if self._segmentation_node and seg_data.labels:
             segmentation = self._segmentation_node.GetSegmentation()
@@ -526,7 +522,6 @@ class SegmentationTab(qt.QWidget):
                     r, g, b = hex_to_rgb_float(lbl.color)
                     segmentation.AddEmptySegment(lbl.name, lbl.name, [r, g, b])
 
-        # Restore colors/names from label data
         if self._segmentation_node and seg_data.labels:
             segmentation = self._segmentation_node.GetSegmentation()
             for lbl in seg_data.labels:

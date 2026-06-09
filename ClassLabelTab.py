@@ -20,6 +20,7 @@ class ClassLabelTab(qt.QWidget):
         self._record = annotation_record
         self._labels = list(labels) if labels else list(DEFAULT_LABELS)
         self._checkboxes = {}
+        self._volume_node = None
         self._setup_ui()
         self._sync_from_record()
 
@@ -29,6 +30,10 @@ class ClassLabelTab(qt.QWidget):
 
     def _setup_ui(self):
         layout = qt.QVBoxLayout(self)
+
+        self._volume_info_label = qt.QLabel("")
+        self._volume_info_label.setStyleSheet("color: #333; font-style: italic;")
+        layout.addWidget(self._volume_info_label)
 
         heading = qt.QLabel("Assign class labels to this scan")
         heading.setStyleSheet("font-weight: bold; font-size: 13px;")
@@ -111,3 +116,34 @@ class ClassLabelTab(qt.QWidget):
                 self._checkboxes[label].setChecked(True)
         self._update_summary()
 
+    # ─── Volume Binding ──────────────────────────────────────────────────
+
+    def set_volume(self, volume_node):
+        """Store volume reference and display its name."""
+        self._volume_node = volume_node
+        if volume_node:
+            self._volume_info_label.setText(f"Annotating: {volume_node.GetName()}")
+        else:
+            self._volume_info_label.setText("")
+
+    def clear_and_unbind(self):
+        """Clear all selections and reset to defaults."""
+        for cb in self._checkboxes.values():
+            cb.blockSignals(True)
+            cb.setChecked(False)
+            cb.blockSignals(False)
+        # Remove custom labels (keep only defaults)
+        for label_text in list(self._checkboxes.keys()):
+            if label_text not in DEFAULT_LABELS:
+                cb = self._checkboxes.pop(label_text)
+                cb.setParent(None)
+                cb.deleteLater()
+        self._volume_node = None
+        self._volume_info_label.setText("")
+        self._update_summary()
+        if self._record:
+            self._record.class_labels = []
+
+    def get_selected_labels(self):
+        """Return list of currently checked labels."""
+        return [name for name, cb in self._checkboxes.items() if cb.isChecked()]
