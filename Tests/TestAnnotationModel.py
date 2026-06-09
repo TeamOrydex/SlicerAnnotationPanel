@@ -8,8 +8,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from AnnotationModel import (
     AnnotationRecord, ROIAnnotation, SegmentationData, SegmentLabel, ScanMetadata,
-    LabelDefinition, LabelConfig
+    LabelDefinition, LabelConfig, ClassLabelAnnotation,
+    SegmentSpatialExtent, SegmentModificationEvent,
 )
+from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export
+
+
+class TestSliceViewMapping(unittest.TestCase):
+    def test_slice_view_to_plane(self):
+        self.assertEqual(slice_view_to_plane("Red"), "Axial")
+        self.assertEqual(slice_view_to_plane("Green"), "Coronal")
+        self.assertEqual(slice_view_to_plane("Yellow"), "Sagittal")
+        self.assertEqual(slice_view_to_plane("Axial Plane"), "Axial")
+        self.assertEqual(slice_view_to_plane("Axial"), "Axial")
+        self.assertEqual(slice_view_to_plane(""), "")
 
 
 class TestAnnotationRecordCreation(unittest.TestCase):
@@ -34,7 +46,8 @@ class TestAnnotationRecordCreation(unittest.TestCase):
         self.assertEqual(record.study_id, "STUDY-001")
         self.assertEqual(record.series_id, "SERIES-001")
         self.assertEqual(record.created_by, "annotator1")
-        self.assertEqual(record.class_labels, ["Normal", "Artifact"])
+        self.assertEqual(record.class_labels[0].label, "Normal")
+        self.assertEqual(record.class_labels[1].label, "Artifact")
 
 
 class TestToDict(unittest.TestCase):
@@ -42,8 +55,11 @@ class TestToDict(unittest.TestCase):
         record = AnnotationRecord()
         d = record.to_dict()
         expected_keys = {
+            "schema_version", "exported_at", "slicer_version", "summary",
             "id", "study_id", "series_id", "created_by", "created_at",
-            "label_config", "scan", "class_labels", "rois", "segmentation",
+            "label_configuration", "series_metadata", "classification_labels",
+            "regions_of_interest", "segmentation",
+            "label_config", "scan", "class_labels", "rois",
         }
         self.assertEqual(set(d.keys()), expected_keys)
 
@@ -54,10 +70,10 @@ class TestToDict(unittest.TestCase):
         )
         d = record.to_dict()
         self.assertEqual(d["study_id"], "S1")
-        self.assertEqual(d["class_labels"], ["Normal"])
-        self.assertEqual(d["rois"], [])
+        self.assertEqual(d["classification_labels"][0]["category"], "Normal")
+        self.assertEqual(d["regions_of_interest"], [])
         self.assertIsNone(d["segmentation"])
-        self.assertIsNone(d["scan"])
+        self.assertIsNone(d["series_metadata"])
 
     def test_to_dict_with_rois(self):
         roi = ROIAnnotation(
@@ -70,8 +86,8 @@ class TestToDict(unittest.TestCase):
         )
         record = AnnotationRecord(rois=[roi])
         d = record.to_dict()
-        self.assertEqual(len(d["rois"]), 1)
-        self.assertEqual(d["rois"][0]["roi_type"], "ellipse")
+        self.assertEqual(len(d["regions_of_interest"]), 1)
+        self.assertEqual(d["regions_of_interest"][0]["geometry_type"], "Ellipse")
 
     def test_to_dict_with_segmentation(self):
         seg = SegmentationData(
@@ -82,7 +98,7 @@ class TestToDict(unittest.TestCase):
         record = AnnotationRecord(segmentation=seg)
         d = record.to_dict()
         self.assertIsNotNone(d["segmentation"])
-        self.assertEqual(d["segmentation"]["labels"][0]["name"], "Tumor")
+        self.assertEqual(d["segmentation"]["segments"][0]["name"], "Tumor")
 
     def test_to_dict_with_scan(self):
         scan = ScanMetadata(
@@ -95,9 +111,9 @@ class TestToDict(unittest.TestCase):
         )
         record = AnnotationRecord(scan=scan)
         d = record.to_dict()
-        self.assertIsNotNone(d["scan"])
-        self.assertEqual(d["scan"]["filename"], "brain.nrrd")
-        self.assertEqual(d["scan"]["dimensions"], [256, 256, 130])
+        self.assertIsNotNone(d["series_metadata"])
+        self.assertEqual(d["series_metadata"]["filename"], "brain.nrrd")
+        self.assertEqual(d["series_metadata"]["dimensions"], [256, 256, 130])
 
 
 class TestFromDict(unittest.TestCase):
@@ -120,7 +136,8 @@ class TestFromDict(unittest.TestCase):
 
         self.assertEqual(restored.id, record.id)
         self.assertEqual(restored.study_id, record.study_id)
-        self.assertEqual(restored.class_labels, record.class_labels)
+        self.assertEqual(restored.class_labels[0].label, record.class_labels[0].label)
+        self.assertEqual(restored.class_labels[1].label, record.class_labels[1].label)
         self.assertEqual(len(restored.rois), 1)
         self.assertIsNotNone(restored.segmentation)
         self.assertIsNotNone(restored.scan)
@@ -147,7 +164,7 @@ class TestFromDict(unittest.TestCase):
         }
         record = AnnotationRecord.from_dict(old_data)
         self.assertEqual(record.id, "old-record")
-        self.assertEqual(record.class_labels, ["Normal"])
+        self.assertEqual(record.class_labels[0].label, "Normal")
 
     def test_from_dict_without_scan_key(self):
         """Old format without scan field loads fine."""
@@ -158,7 +175,7 @@ class TestFromDict(unittest.TestCase):
         }
         record = AnnotationRecord.from_dict(data)
         self.assertIsNone(record.scan)
-        self.assertEqual(record.class_labels, ["A"])
+        self.assertEqual(record.class_labels[0].label, "A")
 
 
 class TestJsonSerialization(unittest.TestCase):
@@ -166,29 +183,54 @@ class TestJsonSerialization(unittest.TestCase):
         record = AnnotationRecord(class_labels=["Normal"])
         json_str = record.to_json()
         parsed = json.loads(json_str)
-        self.assertEqual(parsed["class_labels"], ["Normal"])
+        self.assertEqual(parsed["classification_labels"][0]["category"], "Normal")
 
     def test_json_round_trip(self):
         record = AnnotationRecord(
             study_id="JSON-TEST",
-            class_labels=["Pathological", "Motion Blur"],
+            class_labels=[
+                ClassLabelAnnotation(label="Pathological"),
+                ClassLabelAnnotation(label="Motion Blur"),
+            ],
         )
         json_str = record.to_json()
         restored = AnnotationRecord.from_json(json_str)
         self.assertEqual(restored.study_id, "JSON-TEST")
-        self.assertEqual(restored.class_labels, ["Pathological", "Motion Blur"])
+        self.assertEqual(restored.class_labels[0].label, "Pathological")
+        self.assertEqual(restored.class_labels[1].label, "Motion Blur")
 
 
 class TestClassLabels(unittest.TestCase):
     def test_set_and_get_labels(self):
         record = AnnotationRecord()
-        record.class_labels = ["Normal", "Artifact"]
-        self.assertEqual(record.class_labels, ["Normal", "Artifact"])
+        record.class_labels = [
+            ClassLabelAnnotation(label="Normal"),
+            ClassLabelAnnotation(label="Artifact"),
+        ]
+        self.assertEqual(record.class_labels[0].label, "Normal")
+        self.assertEqual(record.class_labels[1].label, "Artifact")
 
     def test_labels_persist_through_serialization(self):
-        record = AnnotationRecord(class_labels=["A", "B", "C"])
+        record = AnnotationRecord(
+            class_labels=[
+                ClassLabelAnnotation(label="A", slice_view="Red", slice_index=42),
+                ClassLabelAnnotation(label="B"),
+                ClassLabelAnnotation(label="C"),
+            ]
+        )
         restored = AnnotationRecord.from_dict(record.to_dict())
-        self.assertEqual(restored.class_labels, ["A", "B", "C"])
+        self.assertEqual(restored.class_labels[0].label, "A")
+        self.assertEqual(restored.class_labels[0].slice_view, "Axial")
+        self.assertEqual(record.to_dict()["classification_labels"][0]["plane"], "Axial")
+        self.assertEqual(restored.class_labels[0].slice_index, 42)
+        self.assertEqual(restored.class_labels[1].label, "B")
+        self.assertEqual(restored.class_labels[2].label, "C")
+
+    def test_legacy_string_class_labels_load(self):
+        record = AnnotationRecord.from_dict({"class_labels": ["Normal", "Artifact"]})
+        self.assertEqual(record.class_labels[0].label, "Normal")
+        self.assertEqual(record.class_labels[1].label, "Artifact")
+        self.assertEqual(record.class_labels[0].slice_view, "")
 
 
 class TestROIAnnotation(unittest.TestCase):
@@ -199,10 +241,10 @@ class TestROIAnnotation(unittest.TestCase):
         self.assertEqual(roi.control_points, [])
         self.assertEqual(roi.mrml_node_id, "")
 
-    def test_to_dict_excludes_mrml_node_id(self):
+    def test_to_dict_includes_mrml_node_id(self):
         roi = ROIAnnotation(mrml_node_id="vtkMRMLMarkupsLineNode1")
         d = roi.to_dict()
-        self.assertNotIn("mrml_node_id", d)
+        self.assertEqual(d["mrml_node_id"], "vtkMRMLMarkupsLineNode1")
 
     def test_from_dict_round_trip(self):
         roi = ROIAnnotation(
@@ -219,11 +261,56 @@ class TestROIAnnotation(unittest.TestCase):
             description="A freehand curve",
         )
         d = roi.to_dict()
+        self.assertEqual(d["plane"], "Sagittal")
+        self.assertEqual(d["geometry_type"], "Freehand Contour")
         restored = ROIAnnotation.from_dict(d)
         self.assertEqual(restored.id, roi.id)
         self.assertEqual(restored.roi_type, "freehand_curve")
         self.assertEqual(len(restored.control_points), 3)
         self.assertEqual(restored.mrml_node_id, "")
+
+
+class TestSegmentSpatialMetadata(unittest.TestCase):
+    def test_segment_spatial_extent_round_trip(self):
+        extent = SegmentSpatialExtent(
+            bounds_ras=[0.0, 10.0, 0.0, 20.0, 0.0, 30.0],
+            extent_ijk=[10, 50, 20, 60, 30, 70],
+            center_ras=[5.0, 10.0, 15.0],
+            center_voxel_ijk=[30, 40, 50],
+            volume_mm3=123.4,
+            surface_area_mm2=56.7,
+        )
+        restored = SegmentSpatialExtent.from_dict(extent.to_dict())
+        self.assertEqual(restored.extent_ijk, [10, 50, 20, 60, 30, 70])
+        self.assertEqual(restored.volume_mm3, 123.4)
+
+    def test_segment_modification_event_round_trip(self):
+        event = SegmentModificationEvent(
+            effect_name="Threshold",
+            segment_id="Lesion",
+            segment_name="Lesion",
+            effect_parameters={"MinimumThreshold": -100, "MaximumThreshold": 200},
+            slice_context={"plane": "Axial", "slice_number": 42},
+        )
+        restored = SegmentModificationEvent.from_dict(event.to_dict())
+        self.assertEqual(restored.effect_name, "Threshold")
+        self.assertEqual(restored.effect_parameters["MaximumThreshold"], 200)
+
+    def test_segment_label_includes_spatial_and_events(self):
+        lbl = SegmentLabel(
+            name="Spleen",
+            segment_id="Spleen",
+            spatial_extent=SegmentSpatialExtent(extent_ijk=[1, 2, 3, 4, 5, 6]),
+            modification_events=[
+                SegmentModificationEvent(effect_name="Paint", segment_id="Spleen")
+            ],
+            last_effect_name="Paint",
+            last_effect_parameters={"BrushSize": 5},
+        )
+        exported = lbl.to_dict()
+        self.assertIn("spatial_extent", exported)
+        self.assertEqual(len(exported["modification_events"]), 1)
+        self.assertEqual(exported["last_effect_name"], "Paint")
 
 
 class TestSegmentLabel(unittest.TestCase):
@@ -248,10 +335,10 @@ class TestSegmentationData(unittest.TestCase):
         self.assertEqual(seg.export_format, "nrrd")
         self.assertEqual(seg.segmentation_node_id, "")
 
-    def test_to_dict_excludes_segmentation_node_id(self):
+    def test_to_dict_includes_segmentation_node_id(self):
         seg = SegmentationData(segmentation_node_id="vtkMRMLSegmentationNode1")
         d = seg.to_dict()
-        self.assertNotIn("segmentation_node_id", d)
+        self.assertEqual(d["segmentation_node_id"], "vtkMRMLSegmentationNode1")
 
     def test_from_dict_round_trip(self):
         seg = SegmentationData(
@@ -296,10 +383,10 @@ class TestScanMetadata(unittest.TestCase):
         self.assertEqual(scan.dimensions, [256, 256, 130])
         self.assertEqual(scan.modality, "MR")
 
-    def test_to_dict_excludes_volume_node_id(self):
+    def test_to_dict_includes_volume_node_id(self):
         scan = ScanMetadata(volume_node_id="vtkMRMLScalarVolumeNode1")
         d = scan.to_dict()
-        self.assertNotIn("volume_node_id", d)
+        self.assertEqual(d["volume_node_id"], "vtkMRMLScalarVolumeNode1")
 
     def test_to_dict_values(self):
         scan = ScanMetadata(
@@ -315,7 +402,7 @@ class TestScanMetadata(unittest.TestCase):
         self.assertEqual(d["filename"], "test.nii.gz")
         self.assertEqual(d["file_format"], "nifti")
         self.assertEqual(d["dimensions"], [512, 512, 300])
-        self.assertEqual(d["spacing"], [0.5, 0.5, 1.0])
+        self.assertEqual(d["pixel_spacing"], [0.5, 0.5, 1.0])
         self.assertEqual(d["modality"], "CT")
 
     def test_from_dict_round_trip(self):
@@ -368,7 +455,7 @@ class TestAnnotationRecordWithScan(unittest.TestCase):
     def test_record_with_none_scan(self):
         record = AnnotationRecord(scan=None)
         d = record.to_dict()
-        self.assertIsNone(d["scan"])
+        self.assertIsNone(d["series_metadata"])
         restored = AnnotationRecord.from_dict(d)
         self.assertIsNone(restored.scan)
 
@@ -403,7 +490,8 @@ class TestAnnotationRecordWithScan(unittest.TestCase):
         self.assertEqual(restored.study_id, "FULL")
         self.assertEqual(restored.scan.filename, "full.nrrd")
         self.assertEqual(restored.scan.dimensions, [256, 256, 128])
-        self.assertEqual(restored.class_labels, ["Normal", "Artifact"])
+        self.assertEqual(restored.class_labels[0].label, "Normal")
+        self.assertEqual(restored.class_labels[1].label, "Artifact")
         self.assertEqual(len(restored.rois), 1)
         self.assertEqual(restored.segmentation.labels[0].name, "Tumor")
         self.assertEqual(restored.segmentation.total_voxel_count, 1234)
@@ -479,12 +567,12 @@ class TestLabelConfig(unittest.TestCase):
             segmentation_classes=[LabelDefinition(name="Edema", color="#3cb44b")],
         )
         d = config.to_dict()
-        self.assertEqual(len(d["class_labels"]), 1)
-        self.assertEqual(d["class_labels"][0]["name"], "Normal")
-        self.assertEqual(len(d["roi_labels"]), 1)
-        self.assertEqual(d["roi_labels"][0]["name"], "Tumor")
-        self.assertEqual(len(d["segmentation_classes"]), 1)
-        self.assertEqual(d["segmentation_classes"][0]["name"], "Edema")
+        self.assertEqual(len(d["classification_labels"]), 1)
+        self.assertEqual(d["classification_labels"][0]["name"], "Normal")
+        self.assertEqual(len(d["roi_categories"]), 1)
+        self.assertEqual(d["roi_categories"][0]["name"], "Tumor")
+        self.assertEqual(len(d["segment_labels"]), 1)
+        self.assertEqual(d["segment_labels"][0]["name"], "Edema")
 
     def test_from_dict_round_trip(self):
         config = LabelConfig(
@@ -537,8 +625,8 @@ class TestAnnotationRecordWithLabelConfig(unittest.TestCase):
         )
         record = AnnotationRecord(label_config=config, class_labels=["Normal"])
         d = record.to_dict()
-        self.assertIsNotNone(d["label_config"])
-        self.assertEqual(d["label_config"]["class_labels"][0]["name"], "Normal")
+        self.assertIsNotNone(d["label_configuration"])
+        self.assertEqual(d["label_configuration"]["classification_labels"][0]["name"], "Normal")
 
         restored = AnnotationRecord.from_dict(d)
         self.assertIsNotNone(restored.label_config)
@@ -549,7 +637,7 @@ class TestAnnotationRecordWithLabelConfig(unittest.TestCase):
     def test_record_with_none_label_config(self):
         record = AnnotationRecord(label_config=None)
         d = record.to_dict()
-        self.assertIsNone(d["label_config"])
+        self.assertIsNone(d["label_configuration"])
         restored = AnnotationRecord.from_dict(d)
         self.assertIsNone(restored.label_config)
 
@@ -562,7 +650,7 @@ class TestAnnotationRecordWithLabelConfig(unittest.TestCase):
         }
         record = AnnotationRecord.from_dict(data)
         self.assertIsNone(record.label_config)
-        self.assertEqual(record.class_labels, ["Normal"])
+        self.assertEqual(record.class_labels[0].label, "Normal")
 
     def test_preset_json_format(self):
         """Verify preset dict can be converted to LabelConfig."""
@@ -606,7 +694,7 @@ class TestBackwardCompatibility(unittest.TestCase):
         }
         record = AnnotationRecord.from_dict(old_data)
         self.assertEqual(record.id, "compat-test")
-        self.assertEqual(record.class_labels, ["Normal"])
+        self.assertEqual(record.class_labels[0].label, "Normal")
         self.assertIsNone(record.scan)
 
     def test_unknown_keys_do_not_crash(self):
@@ -617,7 +705,7 @@ class TestBackwardCompatibility(unittest.TestCase):
         }
         record = AnnotationRecord.from_dict(data)
         self.assertEqual(record.id, "future-test")
-        self.assertEqual(record.class_labels, ["A"])
+        self.assertEqual(record.class_labels[0].label, "A")
 
 
 if __name__ == "__main__":

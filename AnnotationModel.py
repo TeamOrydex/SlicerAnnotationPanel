@@ -4,6 +4,18 @@ import uuid
 import json
 from datetime import datetime, timezone
 
+from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export, roi_geometry_type_from_export
+
+ANNOTATION_SCHEMA_VERSION = "1.1.0"
+
+
+def _get_slicer_version():
+    try:
+        from SliceInfo import _get_slicer_version as _version
+        return _version()
+    except Exception:
+        return ""
+
 
 @dataclass
 class LabelDefinition:
@@ -33,36 +45,133 @@ class LabelDefinition:
 
 @dataclass
 class LabelConfig:
-    """
-    Centralized label configuration. Defined once before annotation begins.
-    Each list feeds into its corresponding tab.
-    """
+    """Centralized label configuration. Defined once before annotation begins."""
     class_labels: List[LabelDefinition] = field(default_factory=list)
     roi_labels: List[LabelDefinition] = field(default_factory=list)
     segmentation_classes: List[LabelDefinition] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
-            "class_labels": [lbl.to_dict() for lbl in self.class_labels],
-            "roi_labels": [lbl.to_dict() for lbl in self.roi_labels],
-            "segmentation_classes": [lbl.to_dict() for lbl in self.segmentation_classes],
+            "classification_labels": [lbl.to_dict() for lbl in self.class_labels],
+            "roi_categories": [lbl.to_dict() for lbl in self.roi_labels],
+            "segment_labels": [lbl.to_dict() for lbl in self.segmentation_classes],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "LabelConfig":
         return cls(
-            class_labels=[LabelDefinition.from_dict(d) for d in data.get("class_labels", [])],
-            roi_labels=[LabelDefinition.from_dict(d) for d in data.get("roi_labels", [])],
-            segmentation_classes=[LabelDefinition.from_dict(d) for d in data.get("segmentation_classes", [])],
+            class_labels=[
+                LabelDefinition.from_dict(d)
+                for d in data.get("classification_labels", data.get("class_labels", []))
+            ],
+            roi_labels=[
+                LabelDefinition.from_dict(d)
+                for d in data.get("roi_categories", data.get("roi_labels", []))
+            ],
+            segmentation_classes=[
+                LabelDefinition.from_dict(d)
+                for d in data.get("segment_labels", data.get("segmentation_classes", []))
+            ],
+        )
+
+
+@dataclass
+class ClassLabelAnnotation:
+    """A classification label applied at a specific image slice."""
+    label: str = ""
+    slice_view: str = ""
+    slice_index: int = 0
+    slice_position_ras: list = field(default_factory=list)
+    volume_slice_ijk: list = field(default_factory=list)
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    category_id: str = ""
+    category_color: str = ""
+    category_description: str = ""
+    slicer_slice_view: str = ""
+    slice_to_ras_matrix: list = field(default_factory=list)
+    field_of_view: list = field(default_factory=list)
+    slice_spacing: float = 0.0
+    slice_normal_ras: list = field(default_factory=list)
+    volume_node_id: str = ""
+    volume_name: str = ""
+
+    @classmethod
+    def from_slice_context(cls, label_def, slice_info: dict) -> "ClassLabelAnnotation":
+        """Build a rich annotation from a label definition and captured slice context."""
+        return cls(
+            label=label_def.name,
+            category_id=label_def.id,
+            category_color=label_def.color,
+            category_description=label_def.description,
+            slice_view=slice_info.get("plane", slice_info.get("slice_view", "")),
+            slice_index=slice_info.get("slice_number", slice_info.get("slice_index", 0)),
+            slice_position_ras=list(slice_info.get("position_ras", slice_info.get("slice_position_ras", []))),
+            volume_slice_ijk=list(slice_info.get("voxel_index_ijk", slice_info.get("volume_slice_ijk", []))),
+            slicer_slice_view=slice_info.get("slicer_slice_view", ""),
+            slice_to_ras_matrix=list(slice_info.get("slice_to_ras_matrix", [])),
+            field_of_view=list(slice_info.get("field_of_view", [])),
+            slice_spacing=float(slice_info.get("slice_spacing", 0.0) or 0.0),
+            slice_normal_ras=list(slice_info.get("slice_normal_ras", [])),
+            volume_node_id=slice_info.get("volume_node_id", ""),
+            volume_name=slice_info.get("volume_name", ""),
+        )
+
+    def to_dict(self) -> dict:
+        payload = {
+            "category": self.label,
+            "category_id": self.category_id,
+            "category_color": self.category_color,
+            "category_description": self.category_description,
+            "plane": slice_view_to_plane(self.slice_view),
+            "slicer_slice_view": self.slicer_slice_view,
+            "slice_number": self.slice_index,
+            "position_ras": list(self.slice_position_ras),
+            "voxel_index_ijk": list(self.volume_slice_ijk),
+            "slice_to_ras_matrix": list(self.slice_to_ras_matrix),
+            "field_of_view": list(self.field_of_view),
+            "slice_spacing": self.slice_spacing,
+            "slice_normal_ras": list(self.slice_normal_ras),
+            "volume_node_id": self.volume_node_id,
+            "volume_name": self.volume_name,
+            "created_at": self.created_at,
+            # Legacy aliases for downstream tools that expect older keys.
+            "label": self.label,
+            "slice_view": slice_view_to_plane(self.slice_view),
+            "slice_index": self.slice_index,
+            "slice_position_ras": list(self.slice_position_ras),
+            "volume_slice_ijk": list(self.volume_slice_ijk),
+        }
+        return payload
+
+    @classmethod
+    def from_dict(cls, data) -> "ClassLabelAnnotation":
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, str):
+            return cls(label=data)
+        return cls(
+            label=data.get("category", data.get("label", "")),
+            category_id=data.get("category_id", ""),
+            category_color=data.get("category_color", ""),
+            category_description=data.get("category_description", ""),
+            slice_view=data.get("plane", data.get("slice_view", "")),
+            slice_index=data.get("slice_number", data.get("slice_index", 0)),
+            slice_position_ras=data.get("position_ras", data.get("slice_position_ras", [])),
+            volume_slice_ijk=data.get("voxel_index_ijk", data.get("volume_slice_ijk", [])),
+            slicer_slice_view=data.get("slicer_slice_view", ""),
+            slice_to_ras_matrix=data.get("slice_to_ras_matrix", []),
+            field_of_view=data.get("field_of_view", []),
+            slice_spacing=float(data.get("slice_spacing", 0.0) or 0.0),
+            slice_normal_ras=data.get("slice_normal_ras", []),
+            volume_node_id=data.get("volume_node_id", ""),
+            volume_name=data.get("volume_name", ""),
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
         )
 
 
 @dataclass
 class ROIAnnotation:
-    """
-    A single ROI annotation drawn on the scan.
-    Coordinates are stored in RAS (Right-Anterior-Superior) world coordinates.
-    """
+    """A single region of interest on an image series (RAS coordinates)."""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     roi_type: str = ""
     label: str = ""
@@ -75,109 +184,277 @@ class ROIAnnotation:
     description: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     mrml_node_id: str = ""
+    mrml_node_name: str = ""
+    category_id: str = ""
+    category_description: str = ""
+    slicer_slice_view: str = ""
+    slice_position_ras: list = field(default_factory=list)
+    volume_slice_ijk: list = field(default_factory=list)
+    slice_to_ras_matrix: list = field(default_factory=list)
+    field_of_view: list = field(default_factory=list)
+    slice_spacing: float = 0.0
+    slice_normal_ras: list = field(default_factory=list)
+    volume_node_id: str = ""
+    volume_name: str = ""
+    number_of_control_points: int = 0
+    bounding_box_dimensions: list = field(default_factory=list)
+    center_ras: list = field(default_factory=list)
+    center_voxel_ijk: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        """Serialize to a plain dict. Excludes mrml_node_id (runtime only)."""
         return {
             "id": self.id,
+            "geometry_type": roi_geometry_type_export(self.roi_type),
+            "geometry_type_id": self.roi_type,
+            "category": self.label,
+            "category_id": self.category_id,
+            "category_description": self.category_description,
+            "color": self.color,
+            "plane": slice_view_to_plane(self.slice_view),
+            "slicer_slice_view": self.slicer_slice_view,
+            "slice_number": self.slice_index,
+            "position_ras": list(self.slice_position_ras),
+            "voxel_index_ijk": list(self.volume_slice_ijk),
+            "slice_to_ras_matrix": list(self.slice_to_ras_matrix),
+            "field_of_view": list(self.field_of_view),
+            "slice_spacing": self.slice_spacing,
+            "slice_normal_ras": list(self.slice_normal_ras),
+            "volume_node_id": self.volume_node_id,
+            "volume_name": self.volume_name,
+            "control_points_ras": list(self.control_points),
+            "number_of_control_points": self.number_of_control_points,
+            "radii": list(self.radii),
+            "bounding_box_dimensions": list(self.bounding_box_dimensions),
+            "orientation": list(self.orientation),
+            "center_ras": list(self.center_ras),
+            "center_voxel_ijk": list(self.center_voxel_ijk),
+            "description": self.description,
+            "mrml_node_id": self.mrml_node_id,
+            "mrml_node_name": self.mrml_node_name,
+            "created_at": self.created_at,
+            # Legacy aliases
             "roi_type": self.roi_type,
             "label": self.label,
-            "color": self.color,
-            "slice_view": self.slice_view,
+            "slice_view": slice_view_to_plane(self.slice_view),
             "slice_index": self.slice_index,
             "control_points": list(self.control_points),
-            "radii": list(self.radii),
-            "orientation": list(self.orientation),
-            "description": self.description,
-            "created_at": self.created_at,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "ROIAnnotation":
+        geometry = data.get("geometry_type_id", data.get("geometry_type", data.get("roi_type", "")))
         return cls(
             id=data.get("id", str(uuid.uuid4())),
-            roi_type=data.get("roi_type", ""),
-            label=data.get("label", ""),
+            roi_type=roi_geometry_type_from_export(geometry),
+            label=data.get("category", data.get("label", "")),
+            category_id=data.get("category_id", ""),
+            category_description=data.get("category_description", ""),
             color=data.get("color", "#ff0000"),
-            slice_view=data.get("slice_view", ""),
-            slice_index=data.get("slice_index", 0),
-            control_points=data.get("control_points", []),
+            slice_view=data.get("plane", data.get("slice_view", "")),
+            slice_index=data.get("slice_number", data.get("slice_index", 0)),
+            slicer_slice_view=data.get("slicer_slice_view", ""),
+            slice_position_ras=data.get("position_ras", data.get("slice_position_ras", [])),
+            volume_slice_ijk=data.get("voxel_index_ijk", data.get("volume_slice_ijk", [])),
+            slice_to_ras_matrix=data.get("slice_to_ras_matrix", []),
+            field_of_view=data.get("field_of_view", []),
+            slice_spacing=float(data.get("slice_spacing", 0.0) or 0.0),
+            slice_normal_ras=data.get("slice_normal_ras", []),
+            volume_node_id=data.get("volume_node_id", ""),
+            volume_name=data.get("volume_name", ""),
+            control_points=data.get("control_points_ras", data.get("control_points", [])),
+            number_of_control_points=int(data.get("number_of_control_points", 0) or 0),
             radii=data.get("radii", []),
+            bounding_box_dimensions=data.get("bounding_box_dimensions", []),
             orientation=data.get("orientation", []),
+            center_ras=data.get("center_ras", []),
+            center_voxel_ijk=data.get("center_voxel_ijk", []),
             description=data.get("description", ""),
+            mrml_node_id=data.get("mrml_node_id", ""),
+            mrml_node_name=data.get("mrml_node_name", ""),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
-            mrml_node_id="",
+        )
+
+
+@dataclass
+class SegmentSpatialExtent:
+    """Where a segment occupies space in the source volume."""
+    bounds_ras: list = field(default_factory=list)
+    extent_ijk: list = field(default_factory=list)
+    center_ras: list = field(default_factory=list)
+    center_voxel_ijk: list = field(default_factory=list)
+    volume_mm3: float = 0.0
+    surface_area_mm2: float = 0.0
+    oriented_bounding_box_origin_ras: list = field(default_factory=list)
+    oriented_bounding_box_diameter_mm: list = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "bounds_ras": list(self.bounds_ras),
+            "extent_ijk": list(self.extent_ijk),
+            "center_ras": list(self.center_ras),
+            "center_voxel_ijk": list(self.center_voxel_ijk),
+            "volume_mm3": self.volume_mm3,
+            "surface_area_mm2": self.surface_area_mm2,
+            "oriented_bounding_box_origin_ras": list(self.oriented_bounding_box_origin_ras),
+            "oriented_bounding_box_diameter_mm": list(self.oriented_bounding_box_diameter_mm),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SegmentSpatialExtent":
+        if not data:
+            return cls()
+        return cls(
+            bounds_ras=data.get("bounds_ras", []),
+            extent_ijk=data.get("extent_ijk", []),
+            center_ras=data.get("center_ras", []),
+            center_voxel_ijk=data.get("center_voxel_ijk", []),
+            volume_mm3=float(data.get("volume_mm3", 0.0) or 0.0),
+            surface_area_mm2=float(data.get("surface_area_mm2", 0.0) or 0.0),
+            oriented_bounding_box_origin_ras=data.get("oriented_bounding_box_origin_ras", []),
+            oriented_bounding_box_diameter_mm=data.get("oriented_bounding_box_diameter_mm", []),
+        )
+
+
+@dataclass
+class SegmentModificationEvent:
+    """A recorded segment-editor action (paint, threshold, erase, etc.)."""
+    effect_name: str = ""
+    segment_id: str = ""
+    segment_name: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    slice_context: dict = field(default_factory=dict)
+    effect_parameters: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "effect_name": self.effect_name,
+            "segment_id": self.segment_id,
+            "segment_name": self.segment_name,
+            "timestamp": self.timestamp,
+            "slice_context": dict(self.slice_context),
+            "effect_parameters": dict(self.effect_parameters),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SegmentModificationEvent":
+        return cls(
+            effect_name=data.get("effect_name", ""),
+            segment_id=data.get("segment_id", ""),
+            segment_name=data.get("segment_name", ""),
+            timestamp=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
+            slice_context=data.get("slice_context", {}),
+            effect_parameters=data.get("effect_parameters", {}),
         )
 
 
 @dataclass
 class SegmentLabel:
-    """A single segment (label class) within the segmentation."""
+    """A single segment within a segmentation."""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     name: str = ""
     color: str = "#ff0000"
     segment_id: str = ""
     description: str = ""
+    label_config_id: str = ""
+    voxel_count: int = 0
+    spatial_extent: Optional[SegmentSpatialExtent] = None
+    modification_events: List[SegmentModificationEvent] = field(default_factory=list)
+    last_effect_name: str = ""
+    last_effect_parameters: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "id": self.id,
             "name": self.name,
             "color": self.color,
             "segment_id": self.segment_id,
             "description": self.description,
+            "label_config_id": self.label_config_id,
+            "voxel_count": self.voxel_count,
+            "last_effect_name": self.last_effect_name,
+            "last_effect_parameters": dict(self.last_effect_parameters),
+            "modification_events": [event.to_dict() for event in self.modification_events],
         }
+        if self.spatial_extent:
+            payload["spatial_extent"] = self.spatial_extent.to_dict()
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict) -> "SegmentLabel":
+        spatial = data.get("spatial_extent")
+        events = data.get("modification_events", [])
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             name=data.get("name", ""),
             color=data.get("color", "#ff0000"),
             segment_id=data.get("segment_id", ""),
             description=data.get("description", ""),
+            label_config_id=data.get("label_config_id", ""),
+            voxel_count=int(data.get("voxel_count", 0) or 0),
+            spatial_extent=SegmentSpatialExtent.from_dict(spatial) if spatial else None,
+            modification_events=[SegmentModificationEvent.from_dict(e) for e in events],
+            last_effect_name=data.get("last_effect_name", ""),
+            last_effect_parameters=data.get("last_effect_parameters", {}),
         )
 
 
 @dataclass
 class SegmentationData:
-    """Segmentation mask metadata. Voxel data lives in the Slicer scene."""
+    """Segmentation metadata. Voxel data lives in the Slicer scene or export file."""
     labels: List[SegmentLabel] = field(default_factory=list)
     export_format: str = "nrrd"
     export_filepath: str = ""
     source_volume_node_id: str = ""
+    source_volume_name: str = ""
     segmentation_node_id: str = ""
     total_voxel_count: int = 0
     per_label_voxel_counts: Dict[str, int] = field(default_factory=dict)
+    label_to_segment_map: Dict[str, str] = field(default_factory=dict)
+    modification_events: List[SegmentModificationEvent] = field(default_factory=list)
+    editor_state_at_export: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        """Excludes segmentation_node_id (runtime only)."""
         return {
-            "labels": [lbl.to_dict() for lbl in self.labels],
+            "segments": [lbl.to_dict() for lbl in self.labels],
             "export_format": self.export_format,
             "export_filepath": self.export_filepath,
             "source_volume_node_id": self.source_volume_node_id,
+            "source_volume_name": self.source_volume_name,
+            "segmentation_node_id": self.segmentation_node_id,
+            "total_segmented_voxels": self.total_voxel_count,
+            "segment_voxel_counts": dict(self.per_label_voxel_counts),
+            "label_to_segment_map": dict(self.label_to_segment_map),
+            "modification_events": [event.to_dict() for event in self.modification_events],
+            "editor_state_at_export": dict(self.editor_state_at_export),
+            # Legacy aliases
+            "labels": [lbl.to_dict() for lbl in self.labels],
             "total_voxel_count": self.total_voxel_count,
             "per_label_voxel_counts": dict(self.per_label_voxel_counts),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "SegmentationData":
-        labels = [SegmentLabel.from_dict(lbl) for lbl in data.get("labels", [])]
+        segment_data = data.get("segments", data.get("labels", []))
+        labels = [SegmentLabel.from_dict(lbl) for lbl in segment_data]
+        events = data.get("modification_events", [])
         return cls(
             labels=labels,
             export_format=data.get("export_format", "nrrd"),
             export_filepath=data.get("export_filepath", ""),
             source_volume_node_id=data.get("source_volume_node_id", ""),
-            segmentation_node_id="",
-            total_voxel_count=data.get("total_voxel_count", 0),
-            per_label_voxel_counts=data.get("per_label_voxel_counts", {}),
+            source_volume_name=data.get("source_volume_name", ""),
+            segmentation_node_id=data.get("segmentation_node_id", ""),
+            total_voxel_count=data.get("total_segmented_voxels", data.get("total_voxel_count", 0)),
+            per_label_voxel_counts=data.get("segment_voxel_counts", data.get("per_label_voxel_counts", {})),
+            label_to_segment_map=data.get("label_to_segment_map", {}),
+            modification_events=[SegmentModificationEvent.from_dict(e) for e in events],
+            editor_state_at_export=data.get("editor_state_at_export", {}),
         )
 
 
 @dataclass
 class ScanMetadata:
-    """Metadata about the uploaded scan being annotated."""
+    """Metadata about the loaded image series being annotated."""
     filename: str = ""
     filepath: str = ""
     file_format: str = ""
@@ -188,20 +465,69 @@ class ScanMetadata:
     patient_id: str = ""
     study_description: str = ""
     volume_node_id: str = ""
+    volume_name: str = ""
+    ijk_to_ras_matrix: List[float] = field(default_factory=list)
+    series_description: str = ""
+    study_instance_uid: str = ""
+    series_instance_uid: str = ""
+    series_number: str = ""
+    study_date: str = ""
+    instance_uids: List[str] = field(default_factory=list)
+    window_center: Optional[float] = None
+    window_width: Optional[float] = None
+
+    @classmethod
+    def from_volume_capture(cls, captured: dict, filepath="", file_format="") -> "ScanMetadata":
+        return cls(
+            filename=captured.get("volume_name", "") or (filepath.split("/")[-1] if filepath else ""),
+            filepath=filepath,
+            file_format=file_format or captured.get("file_format", ""),
+            dimensions=list(captured.get("dimensions", [])),
+            spacing=list(captured.get("pixel_spacing", [])),
+            origin=list(captured.get("image_origin", [])),
+            modality=captured.get("modality", ""),
+            patient_id=captured.get("patient_id", ""),
+            study_description=captured.get("study_description", ""),
+            volume_node_id=captured.get("volume_node_id", ""),
+            volume_name=captured.get("volume_name", ""),
+            ijk_to_ras_matrix=list(captured.get("ijk_to_ras_matrix", [])),
+            series_description=captured.get("series_description", ""),
+            study_instance_uid=captured.get("study_instance_uid", ""),
+            series_instance_uid=captured.get("series_instance_uid", ""),
+            series_number=captured.get("series_number", ""),
+            study_date=captured.get("study_date", ""),
+            instance_uids=list(captured.get("instance_uids", [])),
+            window_center=captured.get("window_center"),
+            window_width=captured.get("window_width"),
+        )
 
     def to_dict(self) -> dict:
-        """Excludes volume_node_id (runtime only)."""
-        return {
+        payload = {
             "filename": self.filename,
             "filepath": self.filepath,
             "file_format": self.file_format,
             "dimensions": list(self.dimensions),
-            "spacing": list(self.spacing),
-            "origin": list(self.origin),
+            "pixel_spacing": list(self.spacing),
+            "image_origin": list(self.origin),
             "modality": self.modality,
             "patient_id": self.patient_id,
             "study_description": self.study_description,
+            "series_description": self.series_description,
+            "study_instance_uid": self.study_instance_uid,
+            "series_instance_uid": self.series_instance_uid,
+            "series_number": self.series_number,
+            "study_date": self.study_date,
+            "instance_uids": list(self.instance_uids),
+            "volume_node_id": self.volume_node_id,
+            "volume_name": self.volume_name,
+            "ijk_to_ras_matrix": list(self.ijk_to_ras_matrix),
+            "window_center": self.window_center,
+            "window_width": self.window_width,
+            # Legacy aliases
+            "spacing": list(self.spacing),
+            "origin": list(self.origin),
         }
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict) -> "ScanMetadata":
@@ -210,12 +536,22 @@ class ScanMetadata:
             filepath=data.get("filepath", ""),
             file_format=data.get("file_format", ""),
             dimensions=data.get("dimensions", []),
-            spacing=data.get("spacing", []),
-            origin=data.get("origin", []),
+            spacing=data.get("pixel_spacing", data.get("spacing", [])),
+            origin=data.get("image_origin", data.get("origin", [])),
             modality=data.get("modality", ""),
             patient_id=data.get("patient_id", ""),
             study_description=data.get("study_description", ""),
-            volume_node_id="",
+            volume_node_id=data.get("volume_node_id", ""),
+            volume_name=data.get("volume_name", ""),
+            ijk_to_ras_matrix=data.get("ijk_to_ras_matrix", []),
+            series_description=data.get("series_description", ""),
+            study_instance_uid=data.get("study_instance_uid", ""),
+            series_instance_uid=data.get("series_instance_uid", ""),
+            series_number=data.get("series_number", ""),
+            study_date=data.get("study_date", ""),
+            instance_uids=data.get("instance_uids", []),
+            window_center=data.get("window_center"),
+            window_width=data.get("window_width"),
         )
 
 
@@ -231,34 +567,61 @@ class AnnotationRecord:
     label_config: Optional[LabelConfig] = None
     scan: Optional[ScanMetadata] = None
 
-    class_labels: List[str] = field(default_factory=list)
+    class_labels: List[ClassLabelAnnotation] = field(default_factory=list)
     rois: List[ROIAnnotation] = field(default_factory=list)
     segmentation: Optional[SegmentationData] = None
 
+    def __post_init__(self):
+        self.class_labels = [
+            item if isinstance(item, ClassLabelAnnotation) else ClassLabelAnnotation.from_dict(item)
+            for item in self.class_labels
+        ]
+
+    def _build_summary(self) -> dict:
+        seg_voxels = self.segmentation.total_voxel_count if self.segmentation else 0
+        return {
+            "classification_label_count": len(self.class_labels),
+            "roi_count": len(self.rois),
+            "segment_count": len(self.segmentation.labels) if self.segmentation else 0,
+            "total_segmented_voxels": seg_voxels,
+        }
+
     def to_dict(self) -> dict:
         return {
+            "schema_version": ANNOTATION_SCHEMA_VERSION,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "slicer_version": _get_slicer_version(),
             "id": self.id,
             "study_id": self.study_id,
             "series_id": self.series_id,
             "created_by": self.created_by,
             "created_at": self.created_at,
+            "summary": self._build_summary(),
+            "label_configuration": self.label_config.to_dict() if self.label_config else None,
+            "series_metadata": self.scan.to_dict() if self.scan else None,
+            "classification_labels": [lbl.to_dict() for lbl in self.class_labels],
+            "regions_of_interest": [roi.to_dict() for roi in self.rois],
+            "segmentation": self.segmentation.to_dict() if self.segmentation else None,
+            # Legacy top-level aliases
             "label_config": self.label_config.to_dict() if self.label_config else None,
             "scan": self.scan.to_dict() if self.scan else None,
-            "class_labels": list(self.class_labels),
+            "class_labels": [lbl.to_dict() for lbl in self.class_labels],
             "rois": [roi.to_dict() for roi in self.rois],
-            "segmentation": self.segmentation.to_dict() if self.segmentation else None,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "AnnotationRecord":
-        """Deserialize from a plain dict. Unknown keys are silently ignored."""
-        rois = [ROIAnnotation.from_dict(r) for r in data.get("rois", [])]
+        rois = [
+            ROIAnnotation.from_dict(r)
+            for r in data.get("regions_of_interest", data.get("rois", []))
+        ]
         seg_data = data.get("segmentation")
         segmentation = SegmentationData.from_dict(seg_data) if seg_data else None
-        scan_data = data.get("scan")
+        scan_data = data.get("series_metadata", data.get("scan"))
         scan = ScanMetadata.from_dict(scan_data) if scan_data else None
-        lc_data = data.get("label_config")
+        lc_data = data.get("label_configuration", data.get("label_config"))
         label_config = LabelConfig.from_dict(lc_data) if lc_data else None
+        class_labels = data.get("classification_labels", data.get("class_labels", []))
 
         return cls(
             id=data.get("id", str(uuid.uuid4())),
@@ -268,7 +631,7 @@ class AnnotationRecord:
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
             label_config=label_config,
             scan=scan,
-            class_labels=data.get("class_labels", []),
+            class_labels=class_labels,
             rois=rois,
             segmentation=segmentation,
         )

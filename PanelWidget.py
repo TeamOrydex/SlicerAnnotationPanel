@@ -3,7 +3,7 @@ import qt
 import json
 import slicer
 
-from AnnotationModel import AnnotationRecord, ScanMetadata, LabelConfig
+from AnnotationModel import AnnotationRecord, ScanMetadata, LabelConfig, ClassLabelAnnotation
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
 from SegmentationTab import SegmentationTab
@@ -39,7 +39,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._build_action_bar(main_layout)
 
     def _build_scan_section(self, parent_layout):
-        self._scan_group = qt.QGroupBox("Scan")
+        self._scan_group = qt.QGroupBox("Image Series")
         scan_layout = qt.QVBoxLayout(self._scan_group)
 
         # No-scan state
@@ -47,11 +47,11 @@ class AnnotationPanelRootWidget(qt.QWidget):
         no_scan_layout = qt.QVBoxLayout(self._no_scan_widget)
         no_scan_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._no_scan_label = qt.QLabel("No scan loaded. Load a scan to begin annotating.")
+        self._no_scan_label = qt.QLabel("No series loaded. Load an image series to begin annotating.")
         no_scan_layout.addWidget(self._no_scan_label)
 
         btn_row = qt.QHBoxLayout()
-        self._load_file_btn = qt.QPushButton("Load Scan File")
+        self._load_file_btn = qt.QPushButton("Load Image File")
         self._load_file_btn.clicked.connect(self._on_load_scan_file)
         btn_row.addWidget(self._load_file_btn)
 
@@ -76,11 +76,11 @@ class AnnotationPanelRootWidget(qt.QWidget):
         info_layout.addWidget(self._scan_dims_label)
 
         change_row = qt.QHBoxLayout()
-        self._change_scan_btn = qt.QPushButton("Change Scan")
+        self._change_scan_btn = qt.QPushButton("Change Series")
         self._change_scan_btn.clicked.connect(self._on_change_scan)
         change_row.addWidget(self._change_scan_btn)
 
-        self._unload_scan_btn = qt.QPushButton("Unload Scan")
+        self._unload_scan_btn = qt.QPushButton("Unload Series")
         self._unload_scan_btn.clicked.connect(self._on_unload_scan)
         change_row.addWidget(self._unload_scan_btn)
         change_row.addStretch()
@@ -125,9 +125,10 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._tab_widget = qt.QTabWidget()
         self._class_label_tab = ClassLabelTab()
         self._roi_tab = ROITab()
+        self._roi_tab.set_annotation_record(self._record)
         self._segmentation_tab = SegmentationTab()
 
-        self._tab_widget.addTab(self._class_label_tab, "Class Labels")
+        self._tab_widget.addTab(self._class_label_tab, "Classification")
         self._tab_widget.addTab(self._roi_tab, "ROI")
         self._tab_widget.addTab(self._segmentation_tab, "Segmentation")
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
@@ -167,12 +168,14 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def _on_config_confirmed(self, config):
         """Called when user confirms label configuration."""
-        if self._label_config is not None:
-            self._handle_config_changes(self._label_config, config)
+        old_config = self._label_config
+        if old_config is not None:
+            self._collect_all_data()
+            self._handle_config_changes(old_config, config)
 
         self._label_config = config
         self._record.label_config = config
-        self._push_labels_to_tabs(config)
+        self._push_labels_to_tabs(config, old_config)
         self._stacked_widget.setCurrentIndex(1)
         self._update_readiness()
 
@@ -190,11 +193,21 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._config_screen.load_config(self._label_config)
         self._stacked_widget.setCurrentIndex(0)
 
-    def _push_labels_to_tabs(self, config):
+    def _push_labels_to_tabs(self, config, old_config=None):
         """Push configured labels to all annotation tabs."""
         self._class_label_tab.set_labels(config.class_labels)
+        self._class_label_tab.set_class_label_annotations(self._record.class_labels)
+
         self._roi_tab.set_labels(config.roi_labels)
-        self._segmentation_tab.set_labels(config.segmentation_classes)
+        if old_config is not None:
+            self._roi_tab.apply_label_config(old_config.roi_labels, config.roi_labels)
+
+        if old_config is not None:
+            self._segmentation_tab.update_labels_from_config(
+                old_config.segmentation_classes, config.segmentation_classes
+            )
+        else:
+            self._segmentation_tab.set_labels(config.segmentation_classes)
 
     def _handle_config_changes(self, old_config, new_config):
         """Handle label additions, renames, and removals when re-configuring."""
@@ -203,58 +216,100 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._handle_seg_class_changes(old_config.segmentation_classes, new_config.segmentation_classes)
 
     def _handle_class_label_changes(self, old_labels, new_labels):
-        """Update class_labels in record when config changes."""
+        """Update or delete class label annotations when config changes."""
         old_map = {lbl.id: lbl.name for lbl in old_labels}
         new_map = {lbl.id: lbl.name for lbl in new_labels}
+        new_names = {lbl.name for lbl in new_labels}
 
         updated = []
-        warnings = []
-        for name in self._record.class_labels:
+        deleted = []
+        for item in self._record.class_labels:
+            name = item.label if isinstance(item, ClassLabelAnnotation) else str(item)
             old_id = next((lid for lid, lname in old_map.items() if lname == name), None)
             if old_id and old_id in new_map:
-                updated.append(new_map[old_id])
+                if isinstance(item, ClassLabelAnnotation):
+                    item.label = new_map[old_id]
+                    updated.append(item)
+                else:
+                    updated.append(ClassLabelAnnotation(label=new_map[old_id]))
             elif old_id and old_id not in new_map:
-                warnings.append(name)
-            else:
-                updated.append(name)
+                deleted.append(name)
+            elif name in new_names:
+                if isinstance(item, ClassLabelAnnotation):
+                    updated.append(item)
+                else:
+                    updated.append(ClassLabelAnnotation(label=name))
 
         self._record.class_labels = updated
-        if warnings:
+        if deleted:
             qt.QMessageBox.information(
-                self, "Labels Removed",
-                "The following class labels were in use and have been removed:\n" +
-                ", ".join(warnings)
+                self, "Classification Labels Deleted",
+                "The following class label annotations were deleted:\n" +
+                ", ".join(deleted)
             )
 
     def _handle_roi_label_changes(self, old_labels, new_labels):
-        """Update ROI annotations when their labels are renamed or removed."""
-        old_map = {lbl.id: lbl.name for lbl in old_labels}
-        new_map = {lbl.id: lbl.name for lbl in new_labels}
+        """Update or delete ROI annotations when their labels are edited or removed."""
+        old_by_id = {lbl.id: lbl for lbl in old_labels}
+        new_by_id = {lbl.id: lbl for lbl in new_labels}
 
-        warnings = []
+        kept = []
+        deleted = []
         for roi in self._record.rois:
-            old_id = next((lid for lid, lname in old_map.items() if lname == roi.label), None)
-            if old_id and old_id in new_map:
-                roi.label = new_map[old_id]
-            elif old_id and old_id not in new_map:
-                warnings.append(f"ROI '{roi.roi_type}' had label '{roi.label}'")
-                roi.label = ""
+            old_id = next(
+                (lid for lid, lbl in old_by_id.items() if lbl.name == roi.label),
+                None,
+            )
+            if old_id and old_id not in new_by_id:
+                deleted.append(f"{roi.roi_type} ({roi.label})")
+                continue
+            if old_id and old_id in new_by_id:
+                new_def = new_by_id[old_id]
+                roi.label = new_def.name
+                roi.color = new_def.color
+            kept.append(roi)
 
-        if warnings:
+        self._record.rois = kept
+        if deleted:
             qt.QMessageBox.information(
-                self, "ROI Labels Removed",
-                "Some ROI labels were removed. Affected ROIs:\n" +
-                "\n".join(warnings)
+                self, "ROIs Deleted",
+                "ROIs using deleted labels were removed:\n" +
+                "\n".join(deleted)
             )
 
     def _handle_seg_class_changes(self, old_labels, new_labels):
-        """Handle segment removals gracefully (segments recreated from config)."""
-        pass
+        """Delete segmentation metadata for removed classes and warn the user."""
+        old_by_id = {lbl.id: lbl for lbl in old_labels}
+        new_by_id = {lbl.id: lbl for lbl in new_labels}
+        removed = set(old_by_id) - set(new_by_id)
+        if not removed:
+            return
+
+        removed_names = {old_by_id[lid].name for lid in removed}
+        deleted = sorted(removed_names)
+
+        if self._record.segmentation:
+            self._record.segmentation.labels = [
+                lbl for lbl in self._record.segmentation.labels
+                if lbl.name not in removed_names
+            ]
+            for name in removed_names:
+                self._record.segmentation.per_label_voxel_counts.pop(name, None)
+            self._record.segmentation.total_voxel_count = sum(
+                self._record.segmentation.per_label_voxel_counts.values()
+            )
+
+        if deleted:
+            qt.QMessageBox.information(
+                self, "Segmentation Classes Deleted",
+                "The following segmentation classes and their painted data were deleted:\n" +
+                "\n".join(deleted)
+            )
 
     # ─── Readiness ───────────────────────────────────────────────────────
 
     def _update_readiness(self):
-        """Enable annotation tabs only when both config and scan are ready."""
+        """Enable annotation tabs only when both config and series are ready."""
         ready = (self._label_config is not None) and (self._active_volume_node is not None)
         self._tab_widget.setEnabled(ready)
         self._save_draft_btn.setEnabled(ready)
@@ -264,7 +319,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def _on_load_scan_file(self):
         filepath = qt.QFileDialog.getOpenFileName(
-            self, "Load Scan File", "",
+            self, "Load Image File", "",
             "All Supported (*.nrrd *.nii *.nii.gz *.mha *.mhd);;"
             "NRRD (*.nrrd);;NIfTI (*.nii *.nii.gz);;"
             "MetaImage (*.mha *.mhd);;All Files (*)"
@@ -307,7 +362,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
                 )
         except Exception as e:
             qt.QMessageBox.critical(
-                self, "Load Failed", f"Error loading scan: {e}"
+                self, "Load Failed", f"Error loading image series: {e}"
             )
 
     def _on_scan_loaded(self, volume_node, source_path=""):
@@ -354,9 +409,9 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def _confirm_clear(self):
         result = qt.QMessageBox.warning(
-            self, "Change Scan",
-            "Changing the scan will clear ALL annotations "
-            "(class labels, ROIs, and segmentation masks). "
+            self, "Change Series",
+            "Changing the series will clear ALL annotations "
+            "(classification labels, ROIs, and segmentations). "
             "Make sure you have exported your work.\n\nContinue?",
             qt.QMessageBox.Yes | qt.QMessageBox.No,
             qt.QMessageBox.No,
@@ -369,7 +424,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         if loaded and self._active_volume_node:
             name = self._active_volume_node.GetName()
-            self._scan_name_label.setText(f"\u2713 Scan loaded: {name}")
+            self._scan_name_label.setText(f"\u2713 Series loaded: {name}")
 
             image_data = self._active_volume_node.GetImageData()
             if image_data:
@@ -386,39 +441,28 @@ class AnnotationPanelRootWidget(qt.QWidget):
             self._scan_dims_label.setText("")
 
     def _build_scan_metadata(self, volume_node, source_path):
-        meta = ScanMetadata()
-        meta.volume_node_id = volume_node.GetID()
-        meta.filepath = source_path
-        meta.filename = os.path.basename(source_path) if source_path else volume_node.GetName()
+        from SliceInfo import capture_volume_metadata
 
+        file_format = ""
         ext = os.path.splitext(source_path)[-1].lower() if source_path else ""
         if ext in (".nrrd",):
-            meta.file_format = "nrrd"
+            file_format = "nrrd"
         elif ext in (".nii", ".gz"):
-            meta.file_format = "nifti"
+            file_format = "nifti"
         elif ext in (".mha", ".mhd"):
-            meta.file_format = "metaimage"
+            file_format = "metaimage"
         elif os.path.isdir(source_path) if source_path else False:
-            meta.file_format = "dicom"
+            file_format = "dicom"
 
-        image_data = volume_node.GetImageData()
-        if image_data:
-            meta.dimensions = list(image_data.GetDimensions())
-        meta.spacing = list(volume_node.GetSpacing())
-        meta.origin = list(volume_node.GetOrigin())
+        captured = capture_volume_metadata(volume_node)
+        if captured.get("modality") and not file_format:
+            file_format = "dicom"
 
-        try:
-            inst_uids = volume_node.GetAttribute("DICOM.instanceUIDs")
-            if inst_uids:
-                uid = inst_uids.split()[0]
-                meta.modality = slicer.dicomDatabase.fieldForInstance(uid, "0008,0060") or ""
-                meta.patient_id = slicer.dicomDatabase.fieldForInstance(uid, "0010,0020") or ""
-                meta.study_description = slicer.dicomDatabase.fieldForInstance(uid, "0008,1030") or ""
-                if meta.modality:
-                    meta.file_format = "dicom"
-        except Exception:
-            pass
-
+        meta = ScanMetadata.from_volume_capture(captured, source_path, file_format)
+        if not meta.filename and source_path:
+            meta.filename = os.path.basename(source_path)
+        elif not meta.filename:
+            meta.filename = volume_node.GetName()
         return meta
 
     # ─── Tab Switching ───────────────────────────────────────────────────
@@ -451,7 +495,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._series_label.setText(f"Series: {record.series_id}")
 
         if record.class_labels:
-            self._class_label_tab.set_selected_labels(record.class_labels)
+            self._class_label_tab.set_class_label_annotations(record.class_labels)
 
         if record.rois:
             self._roi_tab.load_rois(record.rois)
@@ -484,17 +528,17 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if record.scan and record.scan.filepath:
             if os.path.exists(record.scan.filepath):
                 result = qt.QMessageBox.question(
-                    self, "Load Scan",
-                    f"This draft references a scan at:\n{record.scan.filepath}\n\nLoad it?",
+                    self, "Load Series",
+                    f"This draft references an image series at:\n{record.scan.filepath}\n\nLoad it?",
                     qt.QMessageBox.Yes | qt.QMessageBox.No,
                 )
                 if result == qt.QMessageBox.Yes:
                     self._load_volume_from_file(record.scan.filepath)
             else:
                 qt.QMessageBox.information(
-                    self, "Scan Not Found",
-                    f"The original scan was not found at:\n{record.scan.filepath}\n\n"
-                    "Please load the scan manually."
+                    self, "Series Not Found",
+                    f"The original image series was not found at:\n{record.scan.filepath}\n\n"
+                    "Please load the series manually."
                 )
 
         self.set_record(record)
@@ -509,7 +553,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def _collect_all_data(self):
         """Collect all tab data into the record."""
-        self._record.class_labels = self._class_label_tab.get_selected_labels()
+        self._record.class_labels = self._class_label_tab.get_class_label_annotations()
         self._record.rois = self._roi_tab.get_roi_annotations()
         self._record.segmentation = self._segmentation_tab.get_segmentation_data()
 
@@ -536,7 +580,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if not has_labels and not has_rois and not has_seg:
             qt.QMessageBox.warning(
                 self, "Nothing to Export",
-                "No annotations to export. Annotate the scan first."
+                "No annotations to export. Annotate the series first."
             )
             return
 
@@ -554,13 +598,13 @@ class AnnotationPanelRootWidget(qt.QWidget):
             f.write(self._record.to_json())
         exported_files.append("annotation.json")
 
-        # rois.json
+        # regions_of_interest.json
         if has_rois:
-            rois_path = os.path.join(export_dir, "rois.json")
+            rois_path = os.path.join(export_dir, "regions_of_interest.json")
             rois_data = [roi.to_dict() for roi in self._record.rois]
             with open(rois_path, "w") as f:
                 json.dump(rois_data, f, indent=2)
-            exported_files.append("rois.json")
+            exported_files.append("regions_of_interest.json")
 
         # segmentation.nrrd
         if has_seg:
@@ -572,12 +616,12 @@ class AnnotationPanelRootWidget(qt.QWidget):
                 with open(annotation_path, "w") as f:
                     f.write(self._record.to_json())
 
-        # scan_metadata.json
+        # series_metadata.json
         if self._record.scan:
-            scan_path = os.path.join(export_dir, "scan_metadata.json")
-            with open(scan_path, "w") as f:
+            series_path = os.path.join(export_dir, "series_metadata.json")
+            with open(series_path, "w") as f:
                 json.dump(self._record.scan.to_dict(), f, indent=2)
-            exported_files.append("scan_metadata.json")
+            exported_files.append("series_metadata.json")
 
         qt.QMessageBox.information(
             self, "Export Complete",

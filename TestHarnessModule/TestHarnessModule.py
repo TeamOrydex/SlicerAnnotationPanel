@@ -231,7 +231,11 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         assert len(data["label_config"]["class_labels"]) == 2
         assert len(data["label_config"]["roi_labels"]) == 4
         assert len(data["label_config"]["segmentation_classes"]) == 4
-        assert "Normal" in data["class_labels"], "Expected 'Normal' in class_labels"
+        class_label_names = [
+            item["label"] if isinstance(item, dict) else item
+            for item in data["class_labels"]
+        ]
+        assert "Normal" in class_label_names, "Expected 'Normal' in class_labels"
         assert len(data["rois"]) >= 2, "Expected at least 2 ROIs"
         assert data["scan"] is not None, "Expected scan metadata"
 
@@ -281,7 +285,8 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         self._panel._on_config_confirmed(new_config)
 
         # 6. Verify "Normal" was removed from record
-        assert "Normal" not in self._panel._record.class_labels, (
+        selected_names = [ann.label for ann in self._panel._record.class_labels]
+        assert "Normal" not in selected_names, (
             "Expected 'Normal' to be removed after config edit"
         )
 

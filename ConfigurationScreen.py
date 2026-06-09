@@ -7,14 +7,14 @@ from AnnotationModel import LabelDefinition, LabelConfig
 PRESETS = {
     "Brain Tumor Annotation": {
         "class_labels": [
-            {"name": "Normal", "color": "#4CAF50", "description": "No findings"},
-            {"name": "Pathological", "color": "#f44336", "description": "Has findings"},
+            {"name": "Normal", "color": "#4CAF50", "description": "No abnormality identified"},
+            {"name": "Pathological", "color": "#f44336", "description": "Abnormality present"},
         ],
         "roi_labels": [
-            {"name": "Tumor", "color": "#e6194b", "description": "Tumor region"},
-            {"name": "Lesion", "color": "#f58231", "description": "Lesion area"},
-            {"name": "Cyst", "color": "#42d4f4", "description": "Cyst region"},
-            {"name": "Artifact", "color": "#808080", "description": "Scan artifact"},
+            {"name": "Tumor", "color": "#e6194b", "description": "Tumor"},
+            {"name": "Lesion", "color": "#f58231", "description": "Lesion"},
+            {"name": "Cyst", "color": "#42d4f4", "description": "Cyst"},
+            {"name": "Artifact", "color": "#808080", "description": "Imaging artifact"},
         ],
         "segmentation_classes": [
             {"name": "Tumor Core", "color": "#e6194b", "description": "Solid tumor"},
@@ -25,20 +25,20 @@ PRESETS = {
     },
     "Chest CT Annotation": {
         "class_labels": [
-            {"name": "Normal", "color": "#4CAF50", "description": "Normal scan"},
-            {"name": "Abnormal", "color": "#f44336", "description": "Abnormal findings"},
-            {"name": "Inconclusive", "color": "#FF9800", "description": "Cannot determine"},
+            {"name": "Normal", "color": "#4CAF50", "description": "Normal appearance"},
+            {"name": "Abnormal", "color": "#f44336", "description": "Abnormal appearance"},
+            {"name": "Inconclusive", "color": "#FF9800", "description": "Indeterminate"},
         ],
         "roi_labels": [
             {"name": "Nodule", "color": "#e6194b", "description": "Pulmonary nodule"},
-            {"name": "Mass", "color": "#f58231", "description": "Large mass"},
-            {"name": "Consolidation", "color": "#4363d8", "description": "Consolidation area"},
-            {"name": "Ground Glass Opacity", "color": "#42d4f4", "description": "GGO region"},
+            {"name": "Mass", "color": "#f58231", "description": "Pulmonary mass"},
+            {"name": "Consolidation", "color": "#4363d8", "description": "Consolidation"},
+            {"name": "Ground Glass Opacity", "color": "#42d4f4", "description": "Ground-glass opacity"},
         ],
         "segmentation_classes": [
-            {"name": "Lung Parenchyma", "color": "#3cb44b", "description": "Lung tissue"},
-            {"name": "Nodule", "color": "#e6194b", "description": "Nodule mask"},
-            {"name": "Pleural Effusion", "color": "#4363d8", "description": "Fluid collection"},
+            {"name": "Lung Parenchyma", "color": "#3cb44b", "description": "Lung parenchyma"},
+            {"name": "Nodule", "color": "#e6194b", "description": "Nodule segmentation"},
+            {"name": "Pleural Effusion", "color": "#4363d8", "description": "Pleural effusion"},
         ],
     },
     "Cardiac MRI Annotation": {
@@ -55,6 +55,25 @@ PRESETS = {
             {"name": "LV Myocardium", "color": "#e6194b", "description": "Left ventricle wall"},
             {"name": "LV Cavity", "color": "#3cb44b", "description": "LV blood pool"},
             {"name": "RV Cavity", "color": "#4363d8", "description": "RV blood pool"},
+        ],
+    },
+    "Spleen CT Annotation": {
+        "class_labels": [
+            {"name": "Normal", "color": "#4CAF50", "description": "Normal spleen size and appearance"},
+            {"name": "Enlarged", "color": "#FF9800", "description": "Splenomegaly"},
+            {"name": "Abnormal", "color": "#f44336", "description": "Focal or diffuse abnormality"},
+        ],
+        "roi_labels": [
+            {"name": "Spleen", "color": "#8B4513", "description": "Spleen boundary region"},
+            {"name": "Lesion", "color": "#e6194b", "description": "Focal splenic lesion"},
+            {"name": "Infarct", "color": "#911eb4", "description": "Splenic infarct"},
+            {"name": "Accessory Spleen", "color": "#4363d8", "description": "Accessory splenic tissue"},
+            {"name": "Artifact", "color": "#808080", "description": "Imaging artifact"},
+        ],
+        "segmentation_classes": [
+            {"name": "Spleen", "color": "#8B4513", "description": "Spleen parenchyma"},
+            {"name": "Lesion", "color": "#e6194b", "description": "Focal lesion segmentation"},
+            {"name": "Infarct", "color": "#911eb4", "description": "Infarcted tissue"},
         ],
     },
 }
@@ -165,7 +184,7 @@ class LabelCategoryWidget(qt.QGroupBox):
             "QPushButton { border: none; font-size: 14px; }"
             " QPushButton:hover { background: #E3F2FD; border-radius: 4px; }"
         )
-        edit_btn.clicked.connect(lambda _r=row: self._edit_label(_r))
+        edit_btn.clicked.connect(lambda _checked=False, _r=row: self._edit_label(_r))
         actions_layout.addWidget(edit_btn)
 
         delete_btn = qt.QPushButton("\u2715")
@@ -175,7 +194,7 @@ class LabelCategoryWidget(qt.QGroupBox):
             "QPushButton { border: none; font-size: 14px; color: #c62828; }"
             " QPushButton:hover { background: #FFEBEE; border-radius: 4px; }"
         )
-        delete_btn.clicked.connect(lambda _r=row: self._delete_label(_r))
+        delete_btn.clicked.connect(lambda _checked=False, _r=row: self._delete_label(_r))
         actions_layout.addWidget(delete_btn)
 
         self._table.setCellWidget(row, 3, actions_widget)
@@ -196,7 +215,7 @@ class LabelCategoryWidget(qt.QGroupBox):
                 "QPushButton { border: none; font-size: 14px; }"
                 " QPushButton:hover { background: #E3F2FD; border-radius: 4px; }"
             )
-            edit_btn.clicked.connect(lambda _r=row: self._edit_label(_r))
+            edit_btn.clicked.connect(lambda _checked=False, _r=row: self._edit_label(_r))
             actions_layout.addWidget(edit_btn)
 
             delete_btn = qt.QPushButton("\u2715")
@@ -206,7 +225,7 @@ class LabelCategoryWidget(qt.QGroupBox):
                 "QPushButton { border: none; font-size: 14px; color: #c62828; }"
                 " QPushButton:hover { background: #FFEBEE; border-radius: 4px; }"
             )
-            delete_btn.clicked.connect(lambda _r=row: self._delete_label(_r))
+            delete_btn.clicked.connect(lambda _checked=False, _r=row: self._delete_label(_r))
             actions_layout.addWidget(delete_btn)
 
             self._table.setCellWidget(row, 3, actions_widget)
@@ -268,9 +287,9 @@ class LabelCategoryWidget(qt.QGroupBox):
         dialog.setWindowTitle(title)
         dialog.setMinimumWidth(340)
 
-        form_layout = qt.QFormLayout()
-        dialog.setLayout(form_layout)
+        layout = qt.QVBoxLayout(dialog)
 
+        form_layout = qt.QFormLayout()
         name_edit = qt.QLineEdit(name)
         form_layout.addRow("Name:", name_edit)
 
@@ -297,11 +316,14 @@ class LabelCategoryWidget(qt.QGroupBox):
 
         desc_edit = qt.QLineEdit(description)
         form_layout.addRow("Description:", desc_edit)
+        layout.addLayout(form_layout)
 
-        btn_box = qt.QDialogButtonBox(qt.QDialogButtonBox.Save | qt.QDialogButtonBox.Cancel)
+        btn_box = qt.QDialogButtonBox()
+        save_btn = btn_box.addButton("Save", qt.QDialogButtonBox.AcceptRole)
+        cancel_btn = btn_box.addButton("Cancel", qt.QDialogButtonBox.RejectRole)
         btn_box.accepted.connect(dialog.accept)
         btn_box.rejected.connect(dialog.reject)
-        form_layout.addRow(btn_box)
+        layout.addWidget(btn_box)
 
         if dialog.exec_() != qt.QDialog.Accepted:
             return None
@@ -351,11 +373,13 @@ class ConfigurationScreen(qt.QWidget):
         scroll.setWidget(content)
 
         # ------ Header ------
-        header = qt.QLabel("Annotation Configuration")
+        header = qt.QLabel("Label Configuration")
         header.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 2px;")
         self._content_layout.addWidget(header)
 
-        tagline = qt.QLabel("Define labels for each annotation category before you start annotating.")
+        tagline = qt.QLabel(
+            "Define annotation categories for classification, ROI, and segmentation."
+        )
         tagline.setStyleSheet("color: #666; margin-bottom: 8px;")
         self._content_layout.addWidget(tagline)
 
@@ -384,24 +408,24 @@ class ConfigurationScreen(qt.QWidget):
         # ------ Three category sections ------
         self._class_section = LabelCategoryWidget(
             "Classification Labels",
-            "Whole-scan labels (e.g. Normal / Pathological).",
+            "Slice-level classification labels (e.g. Normal / Abnormal).",
         )
         self._content_layout.addWidget(self._class_section)
 
         self._roi_section = LabelCategoryWidget(
-            "ROI Labels",
-            "Region-of-interest labels drawn on slices.",
+            "ROI Categories",
+            "Categories for regions of interest drawn on image slices.",
         )
         self._content_layout.addWidget(self._roi_section)
 
         self._seg_section = LabelCategoryWidget(
-            "Segmentation Classes",
-            "Voxel-level segmentation mask classes.",
+            "Segment Labels",
+            "Voxel-level segment labels for segmentation.",
         )
         self._content_layout.addWidget(self._seg_section)
 
         # ------ Confirm button ------
-        self._confirm_btn = qt.QPushButton("Confirm && Begin Annotation")
+        self._confirm_btn = qt.QPushButton("Confirm && Start Annotation")
         self._confirm_btn.setMinimumHeight(42)
         self._confirm_btn.setStyleSheet(
             "QPushButton { background-color: #1976D2; color: white; font-size: 15px;"

@@ -1,9 +1,9 @@
 # AnnotationPanel
 
 A custom annotation panel for 3D Slicer that supports:
-- Class-level labels (whole-scan classification tags)
-- ROI annotations (ellipse, rectangle, polygon, freehand curve, line)
-- Segmentation masks (paint, erase, threshold, flood fill, scissors)
+- **Classification labels** — slice-level categories applied at the current anatomical plane
+- **Regions of interest (ROI)** — bounding boxes, polygon/freehand contours, and linear measurements
+- **Segmentations** — voxel-level segment painting (paint, erase, threshold, scissors)
 
 ## Structure
 
@@ -12,13 +12,36 @@ AnnotationPanel/
 ├── AnnotationPanel.py          # Slicer scripted loadable module entry point
 ├── PanelWidget.py              # Root QWidget: tabs and action bar
 ├── AnnotationModel.py          # Data model (dataclass → dict → JSON)
-├── ClassLabelTab.py            # Class-level label UI
+├── RadiologyTerms.py           # Anatomical plane and export terminology
+├── SliceInfo.py                # Slice view capture and plane mapping
+├── ClassLabelTab.py            # Classification label UI
 ├── ROITab.py                   # ROI drawing tools (Markups integration)
 ├── SegmentationTab.py          # Segmentation tab (embedded Segment Editor)
+├── ConfigurationScreen.py      # Label configuration and presets
 ├── TestHarnessModule/          # Standalone test module for Slicer
 ├── Tests/                      # Unit tests for the data model
 └── Resources/Icons/            # Module icons
 ```
+
+## Export terminology
+
+Exports are intentionally verbose so downstream tools can simplify as needed. Each export includes:
+
+- **Schema version** and **export timestamp**
+- **Full label configuration** snapshot
+- **Series metadata** including DICOM UIDs, pixel spacing, IJK→RAS matrix, window/level
+- **Classification labels** with category id/color, plane, slice geometry, RAS/IJK position
+- **Regions of interest** with geometry type, control points, orientation, MRML node references
+- **Segmentation** with segment ids, voxel counts, and label-to-segment mapping
+
+Legacy keys (`scan`, `class_labels`, `rois`, etc.) are also included for backward compatibility.
+
+| Concept | Primary export key |
+|---------|-------------------|
+| Image series metadata | `series_metadata` |
+| Classification labels | `classification_labels` |
+| Regions of interest | `regions_of_interest` |
+| Anatomical planes | `Axial`, `Coronal`, `Sagittal` |
 
 ## Installation
 
