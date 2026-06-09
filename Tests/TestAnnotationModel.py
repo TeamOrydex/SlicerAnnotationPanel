@@ -17,11 +17,9 @@ class TestAnnotationRecordCreation(unittest.TestCase):
         self.assertTrue(len(record.id) > 0)
         self.assertEqual(record.study_id, "")
         self.assertEqual(record.series_id, "")
-        self.assertEqual(record.status, "draft")
         self.assertEqual(record.class_labels, [])
         self.assertEqual(record.rois, [])
         self.assertIsNone(record.segmentation)
-        self.assertEqual(record.freeform_data, {})
         self.assertIsNotNone(record.created_at)
 
     def test_creation_with_values(self):
@@ -36,6 +34,14 @@ class TestAnnotationRecordCreation(unittest.TestCase):
         self.assertEqual(record.created_by, "annotator1")
         self.assertEqual(record.class_labels, ["Normal", "Artifact"])
 
+    def test_no_status_or_reviewer_fields(self):
+        record = AnnotationRecord()
+        self.assertFalse(hasattr(record, "status"))
+        self.assertFalse(hasattr(record, "reviewed_by"))
+        self.assertFalse(hasattr(record, "reviewed_at"))
+        self.assertFalse(hasattr(record, "review_comments"))
+        self.assertFalse(hasattr(record, "freeform_data"))
+
 
 class TestToDict(unittest.TestCase):
     def test_to_dict_has_all_keys(self):
@@ -43,10 +49,18 @@ class TestToDict(unittest.TestCase):
         d = record.to_dict()
         expected_keys = {
             "id", "study_id", "series_id", "created_by", "created_at",
-            "status", "reviewed_by", "reviewed_at", "review_comments",
-            "class_labels", "rois", "segmentation", "freeform_data",
+            "class_labels", "rois", "segmentation",
         }
         self.assertEqual(set(d.keys()), expected_keys)
+
+    def test_to_dict_does_not_contain_removed_fields(self):
+        record = AnnotationRecord()
+        d = record.to_dict()
+        self.assertNotIn("status", d)
+        self.assertNotIn("reviewed_by", d)
+        self.assertNotIn("reviewed_at", d)
+        self.assertNotIn("review_comments", d)
+        self.assertNotIn("freeform_data", d)
 
     def test_to_dict_values(self):
         record = AnnotationRecord(
@@ -95,7 +109,6 @@ class TestFromDict(unittest.TestCase):
             study_id="STUDY-RT",
             series_id="SERIES-RT",
             created_by="user1",
-            status="submitted",
             class_labels=["Normal", "Artifact"],
             rois=[ROIAnnotation(roi_type="rectangle", slice_index=10,
                                 control_points=[{"x": 1.0, "y": 2.0, "z": 3.0}],
@@ -103,7 +116,6 @@ class TestFromDict(unittest.TestCase):
             segmentation=SegmentationData(
                 labels=[SegmentLabel(name="bg", color="#000000", segment_id="S1")],
             ),
-            freeform_data={"notes": "test note"},
         )
         d = record.to_dict()
         restored = AnnotationRecord.from_dict(d)
@@ -111,21 +123,40 @@ class TestFromDict(unittest.TestCase):
         self.assertEqual(restored.id, record.id)
         self.assertEqual(restored.study_id, record.study_id)
         self.assertEqual(restored.series_id, record.series_id)
-        self.assertEqual(restored.status, record.status)
         self.assertEqual(restored.class_labels, record.class_labels)
         self.assertEqual(len(restored.rois), 1)
         self.assertEqual(restored.rois[0].roi_type, "rectangle")
         self.assertEqual(restored.rois[0].radii, [5.0, 3.0])
         self.assertIsNotNone(restored.segmentation)
         self.assertEqual(restored.segmentation.labels[0].name, "bg")
-        self.assertEqual(restored.freeform_data["notes"], "test note")
 
     def test_from_dict_missing_optional_fields(self):
-        minimal = {"id": "test-id", "status": "draft"}
+        minimal = {"id": "test-id"}
         record = AnnotationRecord.from_dict(minimal)
         self.assertEqual(record.id, "test-id")
         self.assertEqual(record.class_labels, [])
         self.assertIsNone(record.segmentation)
+
+    def test_from_dict_ignores_old_fields(self):
+        """Loading an old JSON with removed fields should not crash."""
+        old_data = {
+            "id": "old-record",
+            "study_id": "S-OLD",
+            "status": "approved",
+            "reviewed_by": "reviewer1",
+            "reviewed_at": "2024-01-01T00:00:00",
+            "review_comments": "Looks good",
+            "freeform_data": {"key": "value", "nested": {"a": 1}},
+            "class_labels": ["Normal"],
+            "rois": [],
+        }
+        record = AnnotationRecord.from_dict(old_data)
+        self.assertEqual(record.id, "old-record")
+        self.assertEqual(record.study_id, "S-OLD")
+        self.assertEqual(record.class_labels, ["Normal"])
+        self.assertFalse(hasattr(record, "status"))
+        self.assertFalse(hasattr(record, "reviewed_by"))
+        self.assertFalse(hasattr(record, "freeform_data"))
 
 
 class TestJsonSerialization(unittest.TestCase):
@@ -139,13 +170,11 @@ class TestJsonSerialization(unittest.TestCase):
         record = AnnotationRecord(
             study_id="JSON-TEST",
             class_labels=["Pathological", "Motion Blur"],
-            freeform_data={"key": [1, 2, 3]},
         )
         json_str = record.to_json()
         restored = AnnotationRecord.from_json(json_str)
         self.assertEqual(restored.study_id, "JSON-TEST")
         self.assertEqual(restored.class_labels, ["Pathological", "Motion Blur"])
-        self.assertEqual(restored.freeform_data["key"], [1, 2, 3])
 
 
 class TestClassLabels(unittest.TestCase):
@@ -158,31 +187,6 @@ class TestClassLabels(unittest.TestCase):
         record = AnnotationRecord(class_labels=["A", "B", "C"])
         restored = AnnotationRecord.from_dict(record.to_dict())
         self.assertEqual(restored.class_labels, ["A", "B", "C"])
-
-
-class TestStatusTransitions(unittest.TestCase):
-    def test_draft_to_submitted(self):
-        record = AnnotationRecord()
-        self.assertEqual(record.status, "draft")
-        record.status = "submitted"
-        self.assertEqual(record.status, "submitted")
-
-    def test_submitted_to_approved(self):
-        record = AnnotationRecord(status="submitted")
-        record.status = "approved"
-        record.reviewed_by = "reviewer1"
-        record.reviewed_at = "2024-01-01T00:00:00"
-        self.assertEqual(record.status, "approved")
-        self.assertEqual(record.reviewed_by, "reviewer1")
-
-    def test_submitted_to_rejected(self):
-        record = AnnotationRecord(status="submitted")
-        record.status = "rejected"
-        record.reviewed_by = "reviewer2"
-        record.reviewed_at = "2024-01-02T00:00:00"
-        record.review_comments = "Incomplete labels"
-        self.assertEqual(record.status, "rejected")
-        self.assertEqual(record.review_comments, "Incomplete labels")
 
 
 class TestROIAnnotation(unittest.TestCase):
@@ -374,104 +378,51 @@ class TestAnnotationRecordWithSegmentation(unittest.TestCase):
         self.assertEqual(restored.segmentation.total_voxel_count, 3000)
 
 
-class TestFreeformData(unittest.TestCase):
-    def test_empty_freeform_data(self):
-        record = AnnotationRecord(freeform_data={})
-        d = record.to_dict()
-        self.assertEqual(d["freeform_data"], {})
-        restored = AnnotationRecord.from_dict(d)
-        self.assertEqual(restored.freeform_data, {})
+class TestBackwardCompatibility(unittest.TestCase):
+    """Test loading old format JSON files with removed fields."""
 
-    def test_complex_nested_freeform_data(self):
-        data = {
-            "patient_age": 67,
-            "finding": "Suspicious mass",
-            "is_urgent": True,
-            "measurements": {
-                "length_mm": 23.5,
-                "width_mm": 14.2,
-                "nested_obj": {
-                    "level3_key": "deep_value",
-                    "level3_num": 99,
+    def test_old_format_with_all_removed_fields(self):
+        old_data = {
+            "id": "compat-test",
+            "study_id": "STUDY-OLD",
+            "series_id": "SERIES-OLD",
+            "created_by": "old_user",
+            "created_at": "2024-01-01T00:00:00",
+            "status": "approved",
+            "reviewed_by": "reviewer_person",
+            "reviewed_at": "2024-01-02T00:00:00",
+            "review_comments": "All good",
+            "freeform_data": {"notes": "some data", "nested": {"key": 42}},
+            "class_labels": ["Normal", "Pathological"],
+            "rois": [
+                {
+                    "id": "roi-1",
+                    "roi_type": "line",
+                    "label": "Measurement",
+                    "color": "#00ff00",
+                    "control_points": [{"x": 0, "y": 0, "z": 0}],
                 }
-            },
-            "tags": ["urgent", "follow-up"],
+            ],
+            "segmentation": None,
         }
-        record = AnnotationRecord(freeform_data=data)
-        d = record.to_dict()
-        self.assertEqual(d["freeform_data"]["patient_age"], 67)
-        self.assertEqual(d["freeform_data"]["is_urgent"], True)
-        self.assertEqual(d["freeform_data"]["measurements"]["length_mm"], 23.5)
-        self.assertEqual(
-            d["freeform_data"]["measurements"]["nested_obj"]["level3_key"],
-            "deep_value"
-        )
+        record = AnnotationRecord.from_dict(old_data)
+        self.assertEqual(record.id, "compat-test")
+        self.assertEqual(record.study_id, "STUDY-OLD")
+        self.assertEqual(record.class_labels, ["Normal", "Pathological"])
+        self.assertEqual(len(record.rois), 1)
+        self.assertEqual(record.rois[0].roi_type, "line")
+        self.assertIsNone(record.segmentation)
 
-        restored = AnnotationRecord.from_dict(d)
-        self.assertEqual(restored.freeform_data["patient_age"], 67)
-        self.assertEqual(restored.freeform_data["is_urgent"], True)
-        self.assertEqual(restored.freeform_data["measurements"]["width_mm"], 14.2)
-        self.assertEqual(
-            restored.freeform_data["measurements"]["nested_obj"]["level3_num"], 99
-        )
-        self.assertEqual(restored.freeform_data["tags"], ["urgent", "follow-up"])
-
-    def test_deeply_nested_three_levels(self):
+    def test_old_format_with_unknown_keys_does_not_crash(self):
         data = {
-            "level1": {
-                "level2": {
-                    "level3": "value_at_depth_3"
-                }
-            }
+            "id": "future-test",
+            "unknown_field_1": "anything",
+            "unknown_field_2": [1, 2, 3],
+            "class_labels": ["A"],
         }
-        record = AnnotationRecord(freeform_data=data)
-        json_str = record.to_json()
-        restored = AnnotationRecord.from_json(json_str)
-        self.assertEqual(
-            restored.freeform_data["level1"]["level2"]["level3"],
-            "value_at_depth_3"
-        )
-
-    def test_arrays_with_numbers_strings_booleans(self):
-        data = {
-            "numbers": [1, 2.5, 3, 4.0],
-            "strings": ["hello", "world"],
-            "booleans": [True, False, True],
-        }
-        record = AnnotationRecord(freeform_data=data)
-        json_str = record.to_json()
-        restored = AnnotationRecord.from_json(json_str)
-        self.assertEqual(restored.freeform_data["numbers"], [1, 2.5, 3, 4.0])
-        self.assertEqual(restored.freeform_data["strings"], ["hello", "world"])
-        self.assertEqual(restored.freeform_data["booleans"], [True, False, True])
-
-    def test_non_serializable_value_raises_error(self):
-        from datetime import datetime
-        data = {"timestamp": datetime(2024, 1, 1, 12, 0, 0)}
-        record = AnnotationRecord(freeform_data=data)
-        with self.assertRaises(TypeError):
-            record.to_json()
-
-    def test_json_round_trip_preserves_types(self):
-        data = {
-            "int_val": 42,
-            "float_val": 3.14,
-            "bool_val": False,
-            "null_val": None,
-            "str_val": "text",
-            "list_val": [1, "two", True],
-            "obj_val": {"a": 1},
-        }
-        record = AnnotationRecord(freeform_data=data)
-        json_str = record.to_json()
-        restored = AnnotationRecord.from_json(json_str)
-        self.assertEqual(restored.freeform_data["int_val"], 42)
-        self.assertIsInstance(restored.freeform_data["int_val"], int)
-        self.assertAlmostEqual(restored.freeform_data["float_val"], 3.14)
-        self.assertEqual(restored.freeform_data["bool_val"], False)
-        self.assertIsNone(restored.freeform_data["null_val"])
-        self.assertEqual(restored.freeform_data["list_val"], [1, "two", True])
-        self.assertEqual(restored.freeform_data["obj_val"], {"a": 1})
+        record = AnnotationRecord.from_dict(data)
+        self.assertEqual(record.id, "future-test")
+        self.assertEqual(record.class_labels, ["A"])
 
 
 if __name__ == "__main__":

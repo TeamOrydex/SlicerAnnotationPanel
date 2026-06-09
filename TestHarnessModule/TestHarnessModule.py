@@ -4,6 +4,7 @@ Loads a sample volume and mounts the panel for interactive testing.
 """
 import os
 import sys
+import tempfile
 
 import slicer
 from slicer.ScriptedLoadableModule import (
@@ -64,21 +65,13 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         self._sample_seg_btn.clicked.connect(self._on_add_sample_segmentation)
         self.layout.addWidget(self._sample_seg_btn)
 
-        self._sample_json_btn = qt.QPushButton("Load Sample JSON Data")
-        self._sample_json_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
-        self._sample_json_btn.setToolTip(
-            "Load sample freeform JSON data into the JSON tab"
+        self._test_export_btn = qt.QPushButton("Test Export")
+        self._test_export_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
+        self._test_export_btn.setToolTip(
+            "Export annotations to a temp directory for testing"
         )
-        self._sample_json_btn.clicked.connect(self._on_load_sample_json)
-        self.layout.addWidget(self._sample_json_btn)
-
-        self._print_json_btn = qt.QPushButton("Print Current JSON")
-        self._print_json_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
-        self._print_json_btn.setToolTip(
-            "Print current freeform JSON data to the Python console"
-        )
-        self._print_json_btn.clicked.connect(self._on_print_json)
-        self.layout.addWidget(self._print_json_btn)
+        self._test_export_btn.clicked.connect(self._on_test_export)
+        self.layout.addWidget(self._test_export_btn)
 
         separator = qt.QFrame()
         separator.setFrameShape(qt.QFrame.HLine)
@@ -142,7 +135,6 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         """Create a sample segmentation with sphere segments for testing."""
         import vtk
 
-        # Get the first volume node in the scene
         volume_node = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLScalarVolumeNode")
         if volume_node is None:
             slicer.util.warningDisplay(
@@ -156,7 +148,6 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         seg_node.SetReferenceImageGeometryParameterFromVolumeNode(volume_node)
         seg_node.SetName("TestSegmentation")
 
-        # Add sphere segment: Tumor
         sphere1 = vtk.vtkSphereSource()
         sphere1.SetCenter(0, 0, 0)
         sphere1.SetRadius(15)
@@ -167,7 +158,6 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
             sphere1.GetOutput(), "Tumor", [1.0, 0.0, 0.0]
         )
 
-        # Add sphere segment: Edema
         sphere2 = vtk.vtkSphereSource()
         sphere2.SetCenter(30, 20, 0)
         sphere2.SetRadius(10)
@@ -178,7 +168,6 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
             sphere2.GetOutput(), "Edema", [1.0, 1.0, 0.0]
         )
 
-        # Link to the segmentation tab
         seg_tab = self._panel._segmentation_tab
         seg_tab._segmentation_node = seg_node
         seg_tab._volume_selector.setCurrentNode(volume_node)
@@ -195,34 +184,30 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
             "Test Harness",
         )
 
-    def _on_load_sample_json(self):
-        """Load sample freeform JSON data into the JSON tab."""
-        import json as json_mod
-        sample = {
-            "patient_age": 67,
-            "finding": "Suspicious mass in right lobe",
-            "is_urgent": True,
-            "measurements": {
-                "length_mm": 23.5,
-                "width_mm": 14.2,
-                "depth_mm": 11.8,
-            },
-            "tags": ["urgent", "follow-up", "biopsy-recommended"],
-            "notes": "Patient referred from primary care.\nPrevious scan was 6 months ago.",
-        }
-        self._panel._freeform_tab.load_data(sample)
-        slicer.util.infoDisplay(
-            "Loaded sample JSON data into the Freeform JSON tab.",
-            "Test Harness",
-        )
+    def _on_test_export(self):
+        """Export annotations to a temp directory and print results."""
+        import json
 
-    def _on_print_json(self):
-        """Print current freeform JSON data to the Python console."""
-        import json as json_mod
-        data = self._panel._freeform_tab.get_data()
-        print(json_mod.dumps(data, indent=2))
+        self._panel._collect_all_data()
+        record = self._panel._record
+
+        export_dir = tempfile.mkdtemp(prefix="annotation_export_")
+
+        annotation_path = os.path.join(export_dir, "annotation.json")
+        with open(annotation_path, "w") as f:
+            f.write(record.to_json())
+
+        if record.rois:
+            rois_path = os.path.join(export_dir, "rois.json")
+            with open(rois_path, "w") as f:
+                json.dump([roi.to_dict() for roi in record.rois], f, indent=2)
+
+        print(f"Test export directory: {export_dir}")
+        for fname in os.listdir(export_dir):
+            print(f"  - {fname}")
+
         slicer.util.infoDisplay(
-            "Current JSON data printed to the Python console.",
+            f"Test export complete.\nFiles in: {export_dir}",
             "Test Harness",
         )
 

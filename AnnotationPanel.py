@@ -24,8 +24,7 @@ class AnnotationPanel(ScriptedLoadableModule):
         self.parent.contributors = ["Annotation Panel Contributors"]
         self.parent.helpText = (
             "A custom annotation panel supporting class labels, ROI, "
-            "segmentation masks, and freeform JSON metadata with "
-            "annotator/reviewer workflow."
+            "and segmentation masks for medical image annotation."
         )
         self.parent.acknowledgementText = ""
 

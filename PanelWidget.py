@@ -1,36 +1,24 @@
+import os
 import qt
 import json
-from datetime import datetime, timezone
+import slicer
 
 from AnnotationModel import AnnotationRecord
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
 from SegmentationTab import SegmentationTab
-from FreeformJsonTab import FreeformJsonTab
-from ReviewBar import ReviewBar
-
-
-STATUS_COLORS = {
-    "draft": "#888888",
-    "submitted": "#2196F3",
-    "approved": "#4CAF50",
-    "rejected": "#f44336",
-}
 
 
 class AnnotationPanelRootWidget(qt.QWidget):
     """
     Root panel widget: header, tab bar, active tab content, and action bar.
-    Manages a single AnnotationRecord and coordinates annotator/reviewer workflow.
+    Manages a single AnnotationRecord and coordinates annotation workflow.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._record = AnnotationRecord()
-        self._is_reviewer_mode = False
         self._setup_ui()
-        self._update_status_display()
-        self._update_action_bar()
         self._connect_label_sync()
 
     # ─── UI Setup ────────────────────────────────────────────────────────
@@ -45,39 +33,13 @@ class AnnotationPanelRootWidget(qt.QWidget):
     def _build_header(self, parent_layout):
         header_frame = qt.QFrame()
         header_frame.setFrameShape(qt.QFrame.StyledPanel)
-        header_layout = qt.QVBoxLayout(header_frame)
+        header_layout = qt.QHBoxLayout(header_frame)
 
-        info_row = qt.QHBoxLayout()
         self._study_label = qt.QLabel("Study: \u2014")
         self._series_label = qt.QLabel("Series: \u2014")
-        info_row.addWidget(self._study_label)
-        info_row.addWidget(self._series_label)
-        info_row.addStretch()
-        header_layout.addLayout(info_row)
-
-        status_row = qt.QHBoxLayout()
-        self._status_label = qt.QLabel("Status: \u25cf Draft")
-        self._status_label.setStyleSheet("font-weight: bold;")
-        status_row.addWidget(self._status_label)
-        status_row.addStretch()
-        header_layout.addLayout(status_row)
-
-        mode_row = qt.QHBoxLayout()
-        mode_label = qt.QLabel("Mode:")
-        mode_row.addWidget(mode_label)
-
-        self._mode_group = qt.QButtonGroup(self)
-        self._annotator_radio = qt.QRadioButton("Annotator")
-        self._reviewer_radio = qt.QRadioButton("Reviewer")
-        self._annotator_radio.setChecked(True)
-        self._mode_group.addButton(self._annotator_radio, 0)
-        self._mode_group.addButton(self._reviewer_radio, 1)
-        mode_row.addWidget(self._annotator_radio)
-        mode_row.addWidget(self._reviewer_radio)
-        mode_row.addStretch()
-        header_layout.addLayout(mode_row)
-
-        self._annotator_radio.toggled.connect(self._on_mode_changed)
+        header_layout.addWidget(self._study_label)
+        header_layout.addWidget(self._series_label)
+        header_layout.addStretch()
 
         parent_layout.addWidget(header_frame)
 
@@ -87,14 +49,11 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._class_label_tab = ClassLabelTab(annotation_record=self._record)
         self._roi_tab = ROITab(annotation_record=self._record)
         self._segmentation_tab = SegmentationTab()
-        self._freeform_tab = FreeformJsonTab()
 
         self._tab_widget.addTab(self._class_label_tab, "Class Labels")
         self._tab_widget.addTab(self._roi_tab, "ROI")
         self._tab_widget.addTab(self._segmentation_tab, "Segmentation")
-        self._tab_widget.addTab(self._freeform_tab, "JSON")
 
-        # Cancel ROI placement when switching away from the ROI tab
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
         parent_layout.addWidget(self._tab_widget)
@@ -105,49 +64,27 @@ class AnnotationPanelRootWidget(qt.QWidget):
         separator.setFrameShadow(qt.QFrame.Sunken)
         parent_layout.addWidget(separator)
 
-        self._action_container = qt.QWidget()
-        self._action_layout = qt.QVBoxLayout(self._action_container)
-        self._action_layout.setContentsMargins(0, 4, 0, 0)
-
-        # Annotator buttons
-        self._annotator_bar = qt.QWidget()
-        ann_layout = qt.QHBoxLayout(self._annotator_bar)
-        ann_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout = qt.QHBoxLayout()
 
         self._save_draft_btn = qt.QPushButton("Save Draft")
         self._save_draft_btn.clicked.connect(self._on_save_draft)
-        ann_layout.addWidget(self._save_draft_btn)
+        btn_layout.addWidget(self._save_draft_btn)
 
-        self._submit_btn = qt.QPushButton("Submit for Review")
-        self._submit_btn.setStyleSheet(
+        self._export_btn = qt.QPushButton("Export Annotations")
+        self._export_btn.setStyleSheet(
             "QPushButton { background-color: #2196F3; color: white; "
             "padding: 6px 16px; border-radius: 3px; }"
         )
-        self._submit_btn.clicked.connect(self._on_submit)
-        ann_layout.addWidget(self._submit_btn)
+        self._export_btn.clicked.connect(self._on_export)
+        btn_layout.addWidget(self._export_btn)
 
-        ann_layout.addStretch()
-        self._action_layout.addWidget(self._annotator_bar)
-
-        # Reviewer bar
-        self._review_bar = ReviewBar()
-        self._review_bar.set_callbacks(
-            on_approve=self._on_approve,
-            on_reject=self._on_reject,
-        )
-        self._review_bar.hide()
-        self._action_layout.addWidget(self._review_bar)
-
-        parent_layout.addWidget(self._action_container)
+        btn_layout.addStretch()
+        parent_layout.addLayout(btn_layout)
 
     # ─── Label Synchronization ───────────────────────────────────────────
-    # The ClassLabelTab's checkbox list is the source of truth for available labels.
-    # We sync the label list to the ROI tab's dropdown whenever checkboxes change.
 
     def _connect_label_sync(self):
         """Connect ClassLabelTab checkbox changes to ROI tab label refresh."""
-        # Monkey-patch the ClassLabelTab's _on_checkbox_toggled and _on_add_custom
-        # to trigger a label sync. This avoids modifying ClassLabelTab's interface.
         original_toggled = self._class_label_tab._on_checkbox_toggled
         original_add = self._class_label_tab._on_add_custom
 
@@ -162,7 +99,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._class_label_tab._on_checkbox_toggled = patched_toggled
         self._class_label_tab._on_add_custom = patched_add
 
-        # Initial sync
         self._sync_labels_to_roi_tab()
 
     def _sync_labels_to_roi_tab(self):
@@ -199,26 +135,15 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._roi_tab.set_annotation_record(record)
         self._study_label.setText(f"Study: {record.study_id}")
         self._series_label.setText(f"Series: {record.series_id}")
-        self._update_status_display()
-        self._review_bar.show_review_info(record)
 
-        # Load ROIs into the scene
         if record.rois:
             self._roi_tab.load_rois(record.rois)
 
-        # Load segmentation
         if record.segmentation:
             self._segmentation_tab.load_segmentation(record.segmentation)
 
-        # Load freeform data
-        if record.freeform_data:
-            self._freeform_tab.load_data(record.freeform_data)
-
-        if record.status in ("submitted", "approved", "rejected"):
-            self._set_tabs_read_only(True)
-
     def load_annotation(self, filepath):
-        """Read a JSON file and populate the entire panel."""
+        """Read a JSON file and populate the panel. Unknown keys are ignored."""
         with open(filepath, "r") as f:
             data = json.load(f)
         record = AnnotationRecord.from_dict(data)
@@ -229,30 +154,12 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._roi_tab.cleanup()
         self._segmentation_tab.cleanup()
 
-    # ─── Mode Switching ──────────────────────────────────────────────────
-
-    def _on_mode_changed(self, checked):
-        self._is_reviewer_mode = self._reviewer_radio.isChecked()
-        self._update_action_bar()
-        self._set_tabs_read_only(self._is_reviewer_mode)
-        if self._is_reviewer_mode:
-            self._review_bar.show_review_info(self._record)
-
-    def _update_action_bar(self):
-        if self._is_reviewer_mode:
-            self._annotator_bar.hide()
-            self._review_bar.show()
-        else:
-            self._annotator_bar.show()
-            self._review_bar.hide()
-
     # ─── Actions ─────────────────────────────────────────────────────────
 
     def _collect_all_data(self):
         """Collect all tab data into the record."""
         self._record.rois = self._roi_tab.get_roi_annotations()
         self._record.segmentation = self._segmentation_tab.get_segmentation_data()
-        self._record.freeform_data = self._freeform_tab.get_data()
 
     def _on_save_draft(self):
         filepath = qt.QFileDialog.getSaveFileName(
@@ -261,56 +168,73 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if not filepath:
             return
         self._collect_all_data()
-        self._record.status = "draft"
         with open(filepath, "w") as f:
             f.write(self._record.to_json())
-        self._update_status_display()
 
-    def _on_submit(self):
+    def _on_export(self):
         self._collect_all_data()
 
-        # Remind annotator to export segmentation mask if applicable
-        seg = self._record.segmentation
-        if seg and seg.labels and not seg.export_filepath:
-            result = qt.QMessageBox.question(
-                self,
-                "Export Segmentation?",
-                "You have segmentation data but haven't exported the mask file.\n"
-                "Submit anyway?",
-                qt.QMessageBox.Yes | qt.QMessageBox.No,
+        has_labels = bool(self._record.class_labels)
+        has_rois = bool(self._record.rois)
+        has_seg = (
+            self._record.segmentation is not None
+            and bool(self._record.segmentation.labels)
+        )
+
+        if not has_labels and not has_rois and not has_seg:
+            qt.QMessageBox.warning(
+                self, "Nothing to Export", "No annotations to export."
             )
-            if result == qt.QMessageBox.No:
-                return
+            return
 
-        self._record.status = "submitted"
-        self._update_status_display()
-        self._set_tabs_read_only(True)
+        export_dir = qt.QFileDialog.getExistingDirectory(
+            self, "Select Export Folder"
+        )
+        if not export_dir:
+            return
 
-    def _on_approve(self):
-        self._record.status = "approved"
-        self._record.reviewed_by = "reviewer"
-        self._record.reviewed_at = datetime.now(timezone.utc).isoformat()
-        self._update_status_display()
-        self._review_bar.show_review_info(self._record)
+        exported_files = []
 
-    def _on_reject(self, comments):
-        self._record.status = "rejected"
-        self._record.reviewed_by = "reviewer"
-        self._record.reviewed_at = datetime.now(timezone.utc).isoformat()
-        self._record.review_comments = comments
-        self._update_status_display()
-        self._review_bar.show_review_info(self._record)
+        # annotation.json
+        annotation_path = os.path.join(export_dir, "annotation.json")
+        with open(annotation_path, "w") as f:
+            f.write(self._record.to_json())
+        exported_files.append("annotation.json")
 
-    # ─── Helpers ─────────────────────────────────────────────────────────
+        # rois.json
+        if has_rois:
+            rois_path = os.path.join(export_dir, "rois.json")
+            rois_data = [roi.to_dict() for roi in self._record.rois]
+            with open(rois_path, "w") as f:
+                json.dump(rois_data, f, indent=2)
+            exported_files.append("rois.json")
 
-    def _update_status_display(self):
-        status = self._record.status
-        color = STATUS_COLORS.get(status, "#888888")
-        self._status_label.setText(f"Status: \u25cf {status.capitalize()}")
-        self._status_label.setStyleSheet(f"font-weight: bold; color: {color};")
+        # segmentation.nrrd
+        if has_seg:
+            seg_tab = self._segmentation_tab
+            if seg_tab._segmentation_node is not None:
+                volume_node = seg_tab._volume_selector.currentNode()
+                if volume_node:
+                    seg_path = os.path.join(export_dir, "segmentation.nrrd")
+                    labelmap_node = slicer.mrmlScene.AddNewNodeByClass(
+                        "vtkMRMLLabelMapVolumeNode"
+                    )
+                    try:
+                        slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(
+                            seg_tab._segmentation_node, labelmap_node, volume_node
+                        )
+                        slicer.util.saveNode(labelmap_node, seg_path)
+                        exported_files.append("segmentation.nrrd")
+                    except Exception as e:
+                        qt.QMessageBox.warning(
+                            self, "Segmentation Export Warning",
+                            f"Could not export segmentation: {e}"
+                        )
+                    finally:
+                        slicer.mrmlScene.RemoveNode(labelmap_node)
 
-    def _set_tabs_read_only(self, enabled):
-        self._class_label_tab.set_read_only(enabled)
-        self._roi_tab.set_read_only(enabled)
-        self._segmentation_tab.set_read_only(enabled)
-        self._freeform_tab.set_read_only(enabled)
+        qt.QMessageBox.information(
+            self, "Export Complete",
+            f"Exported to: {export_dir}\n\nFiles:\n" +
+            "\n".join(f"  \u2022 {f}" for f in exported_files)
+        )

@@ -20,7 +20,6 @@ class ClassLabelTab(qt.QWidget):
         self._record = annotation_record
         self._labels = list(labels) if labels else list(DEFAULT_LABELS)
         self._checkboxes = {}
-        self._read_only = False
         self._setup_ui()
         self._sync_from_record()
 
@@ -65,7 +64,6 @@ class ClassLabelTab(qt.QWidget):
     def _add_checkbox(self, label_text):
         cb = qt.QCheckBox(label_text)
         cb.toggled.connect(self._on_checkbox_toggled)
-        cb.setEnabled(not self._read_only)
         self._checkboxes[label_text] = cb
         count = self._scroll_layout.count()
         self._scroll_layout.insertWidget(count - 1, cb)
@@ -113,10 +111,3 @@ class ClassLabelTab(qt.QWidget):
                 self._checkboxes[label].setChecked(True)
         self._update_summary()
 
-    def set_read_only(self, enabled):
-        """Enable or disable read-only mode."""
-        self._read_only = enabled
-        for cb in self._checkboxes.values():
-            cb.setEnabled(not enabled)
-        self._custom_input.setEnabled(not enabled)
-        self._add_btn.setEnabled(not enabled)

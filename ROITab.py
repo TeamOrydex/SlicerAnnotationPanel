@@ -58,7 +58,6 @@ class ROITab(qt.QWidget):
         self._record = annotation_record
         self._labels = list(labels) if labels else list(DEFAULT_ROI_LABELS)
         self._roi_annotations = []  # List[ROIAnnotation]
-        self._read_only = False
         self._current_color = "#ff0000"
         self._active_tool = None
         self._observers = []  # (subject, tag) pairs for cleanup
@@ -501,40 +500,6 @@ class ROITab(qt.QWidget):
                 pass
         self._observers.clear()
 
-    def set_read_only(self, enabled):
-        """Toggle read-only mode."""
-        self._read_only = enabled
-
-        # Tool buttons
-        for tool_id, btn in self._tool_buttons.items():
-            btn.setEnabled(not enabled and self._available_tools.get(tool_id, False))
-
-        # Label/color
-        self._label_combo.setEnabled(not enabled)
-        self._color_btn.setEnabled(not enabled)
-
-        # Actions
-        self._delete_all_btn.setEnabled(not enabled)
-
-        # Cancel active placement
-        if enabled:
-            self.cancel_placement()
-
-        # Update table action buttons
-        self._update_table()
-
-        # Disable markup interaction handles in the scene
-        for roi in self._roi_annotations:
-            if roi.mrml_node_id:
-                try:
-                    node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
-                    if node:
-                        display_node = node.GetDisplayNode()
-                        if display_node and hasattr(display_node, "SetHandlesInteractive"):
-                            display_node.SetHandlesInteractive(not enabled)
-                except Exception:
-                    pass
-
     # ─── Helpers ─────────────────────────────────────────────────────────
 
     def _get_selected_label(self):
@@ -627,10 +592,6 @@ class ROITab(qt.QWidget):
             delete_btn.setToolTip("Delete this ROI")
             delete_btn.clicked.connect(lambda checked, r=row: self._on_delete_roi(r))
             action_layout.addWidget(delete_btn)
-
-            if self._read_only:
-                edit_btn.hide()
-                delete_btn.hide()
 
             self._table.setCellWidget(row, 5, action_widget)
 
@@ -826,10 +787,6 @@ class ROITab(qt.QWidget):
             r, g, b = hex_to_rgb_float(roi.color)
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
-
-        # Disable interaction in read-only mode
-        if self._read_only and display_node and hasattr(display_node, "SetHandlesInteractive"):
-            display_node.SetHandlesInteractive(False)
 
         return node
 

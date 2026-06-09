@@ -35,7 +35,6 @@ class SegmentationTab(qt.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._read_only = False
         self._segmentation_node = None
         self._segment_editor_node = None
         self._color_index = 0
@@ -279,10 +278,6 @@ class SegmentationTab(qt.QWidget):
             del_btn.setFixedSize(24, 24)
             del_btn.clicked.connect(lambda checked, sid=segment_id: self._on_delete_segment(sid))
             action_layout.addWidget(del_btn)
-
-            if self._read_only:
-                edit_btn.hide()
-                del_btn.hide()
 
             self._segment_table.setCellWidget(row, 3, action_widget)
 
@@ -549,23 +544,6 @@ class SegmentationTab(qt.QWidget):
 
         if seg_data.total_voxel_count > 0:
             self._stats_label.setText(f"Total labeled voxels: {seg_data.total_voxel_count:,}")
-
-    def set_read_only(self, enabled):
-        """Toggle read-only mode."""
-        self._read_only = enabled
-        self._volume_selector.setEnabled(not enabled)
-        self._add_segment_btn.setEnabled(not enabled)
-        self._export_nrrd_btn.setEnabled(not enabled)
-        self._export_nifti_btn.setEnabled(not enabled)
-        self._active_segment_combo.setEnabled(not enabled)
-
-        # Disable the segment editor widget
-        try:
-            self._segment_editor_widget.setReadOnly(enabled)
-        except AttributeError:
-            self._segment_editor_widget.setEnabled(not enabled)
-
-        self._refresh_segment_table()
 
     def deactivate_effect(self):
         """Stop the active painting effect."""
