@@ -15,7 +15,7 @@ class ClassLabelTab(qt.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._labels = []  # List[LabelDefinition]
-        self._checkboxes = []  # List[dict] with "widget" and "label_def"
+        self._checkboxes = []  # List[dict]: checkbox, slice_label, row, label_def
         self._selections = {}  # label name -> ClassLabelAnnotation
         self._volume_node = None
         self._setup_ui()
@@ -33,7 +33,7 @@ class ClassLabelTab(qt.QWidget):
 
         hint = qt.QLabel(
             "Scroll to the target slice first, then check a label. "
-            "The anatomical plane, slice number, and RAS position are recorded."
+            "The anatomical plane and slice number appear next to each selection."
         )
         hint.setStyleSheet("color: #666; font-size: 11px;")
         hint.setWordWrap(True)
@@ -62,12 +62,29 @@ class ClassLabelTab(qt.QWidget):
         self._selections = {}
 
         for label_def in self._labels:
+            row = qt.QWidget()
+            row_layout = qt.QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+
             cb = qt.QCheckBox(label_def.name)
             cb.setToolTip(label_def.description)
             cb.toggled.connect(lambda checked, ld=label_def: self._on_toggled(ld, checked))
+            row_layout.addWidget(cb)
+
+            slice_label = qt.QLabel("")
+            slice_label.setStyleSheet("color: #555; font-size: 11px; font-style: italic;")
+            slice_label.setWordWrap(True)
+            row_layout.addWidget(slice_label, 1)
+
             count = self._scroll_layout.count()
-            self._scroll_layout.insertWidget(count - 1, cb)
-            self._checkboxes.append({"widget": cb, "label_def": label_def})
+            self._scroll_layout.insertWidget(count - 1, row)
+            self._checkboxes.append({
+                "checkbox": cb,
+                "slice_label": slice_label,
+                "row": row,
+                "label_def": label_def,
+            })
 
     def get_class_label_annotations(self):
         """Return class label selections with slice instance metadata."""
@@ -88,9 +105,10 @@ class ClassLabelTab(qt.QWidget):
                 self._selections[annotation.label] = annotation
 
         for item in self._checkboxes:
-            item["widget"].blockSignals(True)
-            item["widget"].setChecked(item["label_def"].name in self._selections)
-            item["widget"].blockSignals(False)
+            item["checkbox"].blockSignals(True)
+            item["checkbox"].setChecked(item["label_def"].name in self._selections)
+            item["checkbox"].blockSignals(False)
+            self._refresh_slice_label(item)
         self._update_summary()
 
     def set_selected_labels(self, names):
@@ -100,9 +118,10 @@ class ClassLabelTab(qt.QWidget):
             if name:
                 self._selections[name] = ClassLabelAnnotation(label=name)
         for item in self._checkboxes:
-            item["widget"].blockSignals(True)
-            item["widget"].setChecked(item["label_def"].name in self._selections)
-            item["widget"].blockSignals(False)
+            item["checkbox"].blockSignals(True)
+            item["checkbox"].setChecked(item["label_def"].name in self._selections)
+            item["checkbox"].blockSignals(False)
+            self._refresh_slice_label(item)
         self._update_summary()
 
     def set_volume(self, volume_node):
@@ -119,9 +138,10 @@ class ClassLabelTab(qt.QWidget):
         """Uncheck all boxes. Labels persist from config."""
         self._selections = {}
         for item in self._checkboxes:
-            item["widget"].blockSignals(True)
-            item["widget"].setChecked(False)
-            item["widget"].blockSignals(False)
+            item["checkbox"].blockSignals(True)
+            item["checkbox"].setChecked(False)
+            item["checkbox"].blockSignals(False)
+            self._refresh_slice_label(item)
         self._volume_node = None
         self._volume_info_label.setText("")
         remove_slice_tracking()
@@ -131,9 +151,39 @@ class ClassLabelTab(qt.QWidget):
 
     def _clear_checkboxes(self):
         for item in self._checkboxes:
-            item["widget"].setParent(None)
-            item["widget"].deleteLater()
+            item["row"].setParent(None)
+            item["row"].deleteLater()
         self._checkboxes = []
+
+    def _format_slice_display(self, annotation):
+        if annotation is None:
+            return ""
+        plane = (annotation.slice_view or "").strip()
+        if not plane and annotation.slicer_slice_view:
+            plane = annotation.slicer_slice_view
+        if not plane:
+            plane = "Unknown plane"
+        if annotation.slice_index:
+            return f"{plane} · slice {annotation.slice_index}"
+        return plane
+
+    def _refresh_slice_label(self, item):
+        label_name = item["label_def"].name
+        checked = item["checkbox"].isChecked()
+        slice_label = item["slice_label"]
+        if not checked:
+            slice_label.setText("")
+            slice_label.setToolTip("")
+            return
+        annotation = self._selections.get(label_name)
+        text = self._format_slice_display(annotation)
+        slice_label.setText(text)
+        if annotation and annotation.volume_slice_ijk:
+            slice_label.setToolTip(f"IJK index: {annotation.volume_slice_ijk}")
+        elif annotation and annotation.slice_position_ras:
+            slice_label.setToolTip(f"RAS position: {annotation.slice_position_ras}")
+        else:
+            slice_label.setToolTip("")
 
     def _on_toggled(self, label_def, checked):
         if checked:
@@ -143,6 +193,10 @@ class ClassLabelTab(qt.QWidget):
             )
         else:
             self._selections.pop(label_def.name, None)
+        for item in self._checkboxes:
+            if item["label_def"].name == label_def.name:
+                self._refresh_slice_label(item)
+                break
         self._update_summary()
 
     def _update_summary(self):
@@ -150,16 +204,6 @@ class ClassLabelTab(qt.QWidget):
         if not selected:
             self._summary_label.setText("Selected: (none)")
             return
-
-        parts = []
-        for name in selected:
-            ann = self._selections.get(name)
-            if ann and ann.slice_view:
-                plane = ann.slice_view
-                suffix = f"{plane}, slice {ann.slice_index}"
-                if ann.volume_slice_ijk:
-                    suffix += f", IJK {ann.volume_slice_ijk}"
-                parts.append(f"{name} ({suffix})")
-            else:
-                parts.append(name)
-        self._summary_label.setText("Selected: " + "; ".join(parts))
+        count = len(selected)
+        noun = "label" if count == 1 else "labels"
+        self._summary_label.setText(f"Selected: {count} {noun}")

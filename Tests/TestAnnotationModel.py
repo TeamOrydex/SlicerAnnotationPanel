@@ -679,6 +679,40 @@ class TestAnnotationRecordWithLabelConfig(unittest.TestCase):
         self.assertEqual(restored.roi_labels[0].description, "Tumor region")
 
 
+class TestLabelColors(unittest.TestCase):
+    def test_normalize_hex_color(self):
+        from LabelColors import normalize_hex_color
+
+        self.assertEqual(normalize_hex_color("#FF0000"), "#ff0000")
+        self.assertEqual(normalize_hex_color("#8B4513"), "#8b4513")
+        self.assertEqual(normalize_hex_color("8B4513"), "#8b4513")
+        self.assertEqual(normalize_hex_color("#f00"), "#ff0000")
+
+    def test_next_available_color_skips_used(self):
+        from LabelColors import LABEL_COLOR_PALETTE, next_available_color
+
+        used = [LABEL_COLOR_PALETTE[0], LABEL_COLOR_PALETTE[1], LABEL_COLOR_PALETTE[2]]
+        picked = next_available_color(used)
+        self.assertNotIn(picked, {c.lower() for c in used})
+        self.assertEqual(picked, LABEL_COLOR_PALETTE[3].lower())
+
+    def test_next_available_color_case_insensitive(self):
+        from LabelColors import LABEL_COLOR_PALETTE, next_available_color
+
+        used = ["#4CAF50"]
+        picked = next_available_color(used)
+        self.assertNotEqual(picked, "#4caf50")
+        self.assertEqual(picked, LABEL_COLOR_PALETTE[1].lower())
+
+    def test_next_available_color_when_palette_exhausted(self):
+        from LabelColors import LABEL_COLOR_PALETTE, next_available_color, normalize_hex_color
+
+        used = list(LABEL_COLOR_PALETTE)
+        picked = normalize_hex_color(next_available_color(used))
+        normalized_used = {normalize_hex_color(color) for color in used}
+        self.assertNotIn(picked, normalized_used)
+
+
 class TestBackwardCompatibility(unittest.TestCase):
     """Test loading old format JSON files with removed/missing fields."""
 

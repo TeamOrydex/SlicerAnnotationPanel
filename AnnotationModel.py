@@ -200,6 +200,7 @@ class ROIAnnotation:
     bounding_box_dimensions: list = field(default_factory=list)
     center_ras: list = field(default_factory=list)
     center_voxel_ijk: list = field(default_factory=list)
+    transform_handles_enabled: bool = False
 
     def to_dict(self) -> dict:
         return {

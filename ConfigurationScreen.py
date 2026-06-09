@@ -2,6 +2,7 @@ import qt
 import json
 
 from AnnotationModel import LabelDefinition, LabelConfig
+from LabelColors import next_available_color, normalize_hex_color, DEFAULT_LABEL_COLOR
 
 
 PRESETS = {
@@ -132,11 +133,12 @@ class LabelCategoryWidget(qt.QGroupBox):
             if not label_id:
                 import uuid
                 label_id = str(uuid.uuid4())
+            stored_color = color_item.data(qt.Qt.UserRole) if color_item else ""
             labels.append(
                 LabelDefinition(
                     id=label_id,
                     name=name_item.text() if name_item else "",
-                    color=color_item.data(qt.Qt.UserRole) if color_item else "#ff0000",
+                    color=normalize_hex_color(stored_color) or DEFAULT_LABEL_COLOR,
                     description=desc_item.text() if desc_item else "",
                 )
             )
@@ -152,7 +154,21 @@ class LabelCategoryWidget(qt.QGroupBox):
     # Row helpers
     # ------------------------------------------------------------------
 
+    def _get_used_colors(self):
+        colors = []
+        for row in range(self._table.rowCount):
+            color_item = self._table.item(row, 0)
+            if color_item:
+                stored = color_item.data(qt.Qt.UserRole)
+                if stored:
+                    colors.append(stored)
+        return colors
+
+    def _pick_default_color(self):
+        return next_available_color(self._get_used_colors())
+
     def _insert_row(self, name, color, description, label_id=""):
+        color = normalize_hex_color(color) or self._pick_default_color()
         row = self._table.rowCount
         self._table.insertRow(row)
 
@@ -235,7 +251,8 @@ class LabelCategoryWidget(qt.QGroupBox):
     # ------------------------------------------------------------------
 
     def _add_label(self):
-        result = self._open_label_dialog("Add Label", "", "#ff0000", "")
+        default_color = self._pick_default_color()
+        result = self._open_label_dialog("Add Label", "", default_color, "")
         if result is None:
             return
         name, color, description = result
@@ -259,6 +276,7 @@ class LabelCategoryWidget(qt.QGroupBox):
 
         self._table.item(row, 1).setText(name)
         self._table.item(row, 2).setText(description)
+        color = normalize_hex_color(color) or normalize_hex_color(old_color) or DEFAULT_LABEL_COLOR
         color_item = self._table.item(row, 0)
         color_item.setBackground(qt.QColor(color))
         color_item.setData(qt.Qt.UserRole, color)

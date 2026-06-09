@@ -26,6 +26,7 @@ MARKUP_NODE_CLASSES = {
 
 RECTANGLE_TOOL_IDS = ("rectangle_3d", "rectangle")
 
+EXTENDABLE_ROI_TYPES = frozenset({"polygon", "freehand_curve", "line"})
 
 
 def hex_to_rgb_float(hex_color):
@@ -63,6 +64,8 @@ class ROITab(qt.QWidget):
         self._available_tools = {}
         self._placement_node = None
         self._rectangle_finalize_scheduled = set()
+        self._extend_roi = None
+        self._extend_mode_active = False
 
         self._setup_ui()
         self._check_available_tools()
@@ -113,6 +116,13 @@ class ROITab(qt.QWidget):
 
         btn_row.addStretch()
         toolbar_layout.addLayout(btn_row)
+
+        self._extend_hint_label = qt.QLabel("")
+        self._extend_hint_label.setStyleSheet("color: #1565C0; font-size: 11px; font-style: italic;")
+        self._extend_hint_label.setWordWrap(True)
+        self._extend_hint_label.hide()
+        toolbar_layout.addWidget(self._extend_hint_label)
+
         parent_layout.addWidget(toolbar_frame)
 
     def _build_label_section(self, parent_layout):
@@ -148,6 +158,7 @@ class ROITab(qt.QWidget):
             ["#", "Actions", "Geometry", "Category", "Color", "Plane", "Slice #"]
         )
         self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.setColumnWidth(1, 150)
         self._table.setSelectionBehavior(qt.QTableWidget.SelectRows)
         self._table.setSelectionMode(qt.QTableWidget.SingleSelection)
         self._table.setEditTriggers(qt.QTableWidget.NoEditTriggers)
@@ -198,16 +209,22 @@ class ROITab(qt.QWidget):
 
     def _on_tool_toggled(self, tool_id, checked):
         if checked:
-            # Finalize any pending placement from the previous tool
             self._deactivate_tool()
-            # Uncheck other buttons
             for tid, btn in self._tool_buttons.items():
                 if tid != tool_id:
                     btn.blockSignals(True)
                     btn.setChecked(False)
                     btn.blockSignals(False)
-            self._activate_tool(tool_id)
+
+            extend_row = self._selected_table_row()
+            if extend_row >= 0 and self._can_extend_with_tool(extend_row, tool_id):
+                self._begin_extend_roi(extend_row, from_tool=True)
+                self._check_tool_button(tool_id)
+            else:
+                self._activate_tool(tool_id)
         else:
+            if self._extend_mode_active:
+                self._finish_extend_mode(sync=True)
             self._deactivate_tool()
 
     def _configure_roi_node(self, node):
@@ -357,6 +374,7 @@ class ROITab(qt.QWidget):
             r, g, b = hex_to_rgb_float(self._current_color)
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
+            self._configure_markup_display(display_node, transform_handles=False)
 
         self._placement_node = node
 
@@ -406,49 +424,56 @@ class ROITab(qt.QWidget):
     def _on_interaction_mode_changed(self, caller, event):
         """Called when Slicer's interaction mode changes (e.g. right-click exits placement)."""
         interaction_node = caller
-        if interaction_node.GetCurrentInteractionMode() != interaction_node.Place:
-            self._remove_interaction_observer()
-            if not self._placement_node or not self._active_tool:
-                return
+        if interaction_node.GetCurrentInteractionMode() == interaction_node.Place:
+            return
 
-            active = self._active_tool
-            node = self._placement_node
+        self._remove_interaction_observer()
 
-            if active in RECTANGLE_TOOL_IDS:
-                try:
-                    cp_count = node.GetNumberOfControlPoints()
-                except Exception:
-                    cp_count = 0
+        if self._extend_mode_active:
+            self._finish_extend_mode(sync=True)
+            return
 
-                if self._rectangle_placement_complete(node):
-                    self._active_tool = None
-                    self._placement_node = None
-                    self._schedule_rectangle_finalize(node, active)
-                    self._uncheck_all_tools()
-                elif cp_count >= 1:
-                    qt.QTimer.singleShot(
-                        0, lambda n=node, t=active: self._resume_rectangle_placement(n, t)
-                    )
-                else:
-                    # Box ROI removes control points when done; geometry may lag behind.
-                    self._active_tool = None
-                    self._placement_node = None
-                    self._schedule_rectangle_finalize(node, active)
-                    self._uncheck_all_tools()
-                return
+        if not self._placement_node or not self._active_tool:
+            return
 
-            self._active_tool = None
-            self._placement_node = None
+        active = self._active_tool
+        node = self._placement_node
 
-            if active in ("polygon", "freehand_curve") and node.GetNumberOfControlPoints() >= 3:
-                self._finalize_roi(node, active)
-            elif node.GetNumberOfControlPoints() == 0:
-                try:
-                    slicer.mrmlScene.RemoveNode(node)
-                except Exception:
-                    pass
+        if active in RECTANGLE_TOOL_IDS:
+            try:
+                cp_count = node.GetNumberOfControlPoints()
+            except Exception:
+                cp_count = 0
 
-            self._uncheck_all_tools()
+            if self._rectangle_placement_complete(node):
+                self._active_tool = None
+                self._placement_node = None
+                self._schedule_rectangle_finalize(node, active)
+                self._uncheck_all_tools()
+            elif cp_count >= 1:
+                qt.QTimer.singleShot(
+                    0, lambda n=node, t=active: self._resume_rectangle_placement(n, t)
+                )
+            else:
+                # Box ROI removes control points when done; geometry may lag behind.
+                self._active_tool = None
+                self._placement_node = None
+                self._schedule_rectangle_finalize(node, active)
+                self._uncheck_all_tools()
+            return
+
+        self._active_tool = None
+        self._placement_node = None
+
+        if active in ("polygon", "freehand_curve") and node.GetNumberOfControlPoints() >= 3:
+            self._finalize_roi(node, active)
+        elif node.GetNumberOfControlPoints() == 0:
+            try:
+                slicer.mrmlScene.RemoveNode(node)
+            except Exception:
+                pass
+
+        self._uncheck_all_tools()
 
     def _deactivate_tool(self):
         """Cancel placement mode and finalize pending shapes."""
@@ -538,6 +563,217 @@ class ROITab(qt.QWidget):
         elif "ROI" in class_name:
             return "rectangle_3d"
         return "unknown"
+
+    # ─── Extend / edit existing ROIs ─────────────────────────────────────
+
+    def _check_tool_button(self, tool_id):
+        btn = self._tool_buttons.get(tool_id)
+        if btn:
+            btn.blockSignals(True)
+            btn.setChecked(True)
+            btn.blockSignals(False)
+
+    def _selected_table_row(self):
+        indexes = self._table.selectionModel().selectedRows()
+        if not indexes:
+            return -1
+        row = indexes[0].row()
+        if 0 <= row < len(self._roi_annotations):
+            return row
+        return -1
+
+    def _can_extend_with_tool(self, row, tool_id):
+        if row < 0 or row >= len(self._roi_annotations):
+            return False
+        roi = self._roi_annotations[row]
+        return (
+            self._is_extendable(roi)
+            and roi.roi_type == tool_id
+            and bool(roi.mrml_node_id)
+        )
+
+    def _is_extendable(self, roi):
+        return roi.roi_type in EXTENDABLE_ROI_TYPES
+
+    def _set_curve_linear(self, node):
+        if node is None:
+            return
+        for method_name in ("SetCurveTypeToLinear",):
+            try:
+                method = getattr(node, method_name, None)
+                if callable(method):
+                    method()
+                    return
+            except Exception:
+                pass
+        try:
+            if hasattr(node, "CurveTypeLinear"):
+                node.CurveType = node.CurveTypeLinear
+        except Exception:
+            pass
+
+    def _copy_markup_display(self, source_node, target_node, transform_handles=False):
+        source_display = source_node.GetDisplayNode() if source_node else None
+        target_display = target_node.GetDisplayNode() if target_node else None
+        if not source_display or not target_display:
+            return
+        try:
+            target_display.SetSelectedColor(source_display.GetSelectedColor())
+            target_display.SetColor(source_display.GetColor())
+            self._configure_markup_display(target_display, transform_handles=transform_handles)
+        except Exception:
+            pass
+
+    def _prepare_line_for_extension(self, node, roi):
+        """Convert a 2-point line node to a linear open curve so it can grow."""
+        if node is None:
+            return None
+        if "Line" not in node.GetClassName():
+            return node
+
+        points = []
+        for i in range(node.GetNumberOfControlPoints()):
+            pos = [0.0, 0.0, 0.0]
+            node.GetNthControlPointPosition(i, pos)
+            points.append(pos)
+
+        curve = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode")
+        if not curve:
+            return node
+        curve.SetName(node.GetName())
+        self._copy_markup_display(node, curve, roi.transform_handles_enabled)
+        for pos in points:
+            curve.AddControlPoint(pos[0], pos[1], pos[2])
+        self._set_curve_linear(curve)
+
+        old_id = node.GetID()
+        self._remove_node_observers(old_id)
+        try:
+            slicer.mrmlScene.RemoveNode(node)
+        except Exception:
+            pass
+
+        roi.mrml_node_id = curve.GetID()
+        return curve
+
+    def _sync_roi_from_node(self, roi, node):
+        if roi is None or node is None:
+            return
+        points = []
+        for i in range(node.GetNumberOfControlPoints()):
+            pos = [0.0, 0.0, 0.0]
+            node.GetNthControlPointPosition(i, pos)
+            points.append({"x": pos[0], "y": pos[1], "z": pos[2]})
+        roi.control_points = points
+        self._apply_geometry_metadata(roi, node)
+        self._update_table()
+        self._sync_to_record()
+
+    def _ensure_extend_observers(self, node):
+        for event in (
+            slicer.vtkMRMLMarkupsNode.PointModifiedEvent,
+            slicer.vtkMRMLMarkupsNode.PointPositionDefinedEvent,
+        ):
+            self._add_node_observer(node, event, self._on_extend_node_modified)
+
+    def _on_extend_node_modified(self, caller, event):
+        if self._extend_roi and caller is not None:
+            self._sync_roi_from_node(self._extend_roi, caller)
+
+    def _show_extend_hint(self, roi):
+        self._extend_hint_label.setText(
+            f"Extending {roi_geometry_type_export(roi.roi_type)} \"{roi.label or 'ROI'}\" "
+            "from the latest point: click on the slice to add points. Right-click to finish."
+        )
+        self._extend_hint_label.show()
+
+    def _hide_extend_hint(self):
+        self._extend_hint_label.hide()
+        self._extend_hint_label.setText("")
+
+    def _begin_extend_roi(self, row, from_tool=False):
+        if row < 0 or row >= len(self._roi_annotations):
+            return
+
+        roi = self._roi_annotations[row]
+        if not self._is_extendable(roi) or not roi.mrml_node_id:
+            return
+
+        if from_tool:
+            self._finish_extend_mode(sync=True)
+        else:
+            self._deactivate_tool()
+            self._finish_extend_mode(sync=True)
+            self._uncheck_all_tools()
+
+        node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
+        if not node:
+            return
+
+        if roi.roi_type == "line":
+            node = self._prepare_line_for_extension(node, roi)
+            if not node:
+                return
+
+        self._extend_roi = roi
+        self._extend_mode_active = True
+        self._table.selectRow(row)
+        self._show_extend_hint(roi)
+
+        display_node = node.GetDisplayNode()
+        if display_node:
+            self._configure_markup_display(
+                display_node, transform_handles=roi.transform_handles_enabled
+            )
+
+        try:
+            slicer.modules.markups.logic().SetActiveList(node)
+        except Exception:
+            pass
+
+        selection_node = slicer.app.applicationLogic().GetSelectionNode()
+        selection_node.SetActivePlaceNodeID(node.GetID())
+
+        interaction_node = slicer.app.applicationLogic().GetInteractionNode()
+        interaction_node.SetPlaceModePersistence(True)
+        interaction_node.SetCurrentInteractionMode(interaction_node.Place)
+        self._observe_interaction_mode_change(interaction_node)
+        self._ensure_extend_observers(node)
+
+        if node.GetNumberOfControlPoints() > 0:
+            pos = [0.0, 0.0, 0.0]
+            node.GetNthControlPointPosition(node.GetNumberOfControlPoints() - 1, pos)
+            try:
+                slicer.modules.markups.logic().JumpSlicesToLocation(
+                    pos[0], pos[1], pos[2], True
+                )
+            except Exception:
+                pass
+
+    def _finish_extend_mode(self, sync=False):
+        if not self._extend_mode_active and not self._extend_roi:
+            return
+
+        roi = self._extend_roi
+        if sync and roi and roi.mrml_node_id:
+            node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
+            if node:
+                self._sync_roi_from_node(roi, node)
+                self._configure_markup_display(
+                    node.GetDisplayNode(),
+                    transform_handles=roi.transform_handles_enabled,
+                )
+
+        self._extend_mode_active = False
+        self._extend_roi = None
+        self._hide_extend_hint()
+        self._remove_interaction_observer()
+        self._uncheck_all_tools()
+        try:
+            interaction_node = slicer.app.applicationLogic().GetInteractionNode()
+            interaction_node.SetCurrentInteractionMode(interaction_node.ViewTransform)
+        except Exception:
+            pass
 
     # ─── ROI Finalization ────────────────────────────────────────────────
 
@@ -637,6 +873,14 @@ class ROITab(qt.QWidget):
                 pass
 
         self._apply_geometry_metadata(roi, node)
+        display_node = node.GetDisplayNode()
+        if display_node:
+            r, g, b = hex_to_rgb_float(roi.color)
+            display_node.SetSelectedColor(r, g, b)
+            display_node.SetColor(r, g, b)
+            self._configure_markup_display(
+                display_node, transform_handles=roi.transform_handles_enabled
+            )
         self._roi_annotations.append(roi)
         self._update_table()
         self._sync_to_record()
@@ -716,7 +960,7 @@ class ROITab(qt.QWidget):
         self._update_table()
 
     def set_volume(self, volume_node):
-        """Store the shared volume reference."""
+        """Store the shared volume reference used for slice context capture."""
         self._volume_node = volume_node
 
     def clear_and_unbind(self):
@@ -739,7 +983,8 @@ class ROITab(qt.QWidget):
         self._volume_node = None
 
     def cancel_placement(self):
-        """Cancel any active placement mode."""
+        """Cancel any active placement or extend mode."""
+        self._finish_extend_mode(sync=True)
         self._deactivate_tool()
         self._uncheck_all_tools()
 
@@ -759,6 +1004,50 @@ class ROITab(qt.QWidget):
         self._observers.clear()
 
     # ─── Helpers ─────────────────────────────────────────────────────────
+
+    def _configure_markup_display(self, display_node, transform_handles=False):
+        """Apply visibility settings; transform_handles controls move/rotate widget."""
+        if not display_node:
+            return
+        try:
+            display_node.SetVisibility(True)
+            display_node.SetHandlesInteractive(bool(transform_handles))
+        except Exception:
+            pass
+        for method_name, value in (
+            ("SetTranslationHandleVisibility", transform_handles),
+            ("SetRotationHandleVisibility", transform_handles),
+            ("SetScaleHandleVisibility", transform_handles),
+        ):
+            try:
+                method = getattr(display_node, method_name, None)
+                if callable(method):
+                    method(bool(value))
+            except Exception:
+                pass
+        try:
+            markups_dn = slicer.vtkMRMLMarkupsDisplayNode
+            if hasattr(display_node, "SetHandleVisibility"):
+                for handle_name in ("TranslateHandle", "RotateHandle", "ScaleHandle"):
+                    handle_type = getattr(markups_dn, handle_name, None)
+                    if handle_type is not None:
+                        display_node.SetHandleVisibility(handle_type, bool(transform_handles))
+        except Exception:
+            pass
+
+    def _apply_roi_display_handles(self, roi):
+        if not roi or not roi.mrml_node_id:
+            return
+        node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
+        if node:
+            self._configure_markup_display(
+                node.GetDisplayNode(),
+                transform_handles=roi.transform_handles_enabled,
+            )
+
+    def _on_roi_transform_handles_toggled(self, roi, checked):
+        roi.transform_handles_enabled = bool(checked)
+        self._apply_roi_display_handles(roi)
 
     def _get_selected_label(self):
         text = self._label_combo.currentText
@@ -807,6 +1096,9 @@ class ROITab(qt.QWidget):
             r, g, b = hex_to_rgb_float(roi.color)
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
+            self._configure_markup_display(
+                display_node, transform_handles=roi.transform_handles_enabled
+            )
 
     # ─── Table Management ────────────────────────────────────────────────
 
@@ -828,6 +1120,23 @@ class ROITab(qt.QWidget):
             delete_btn.setToolTip("Delete this ROI")
             delete_btn.clicked.connect(lambda checked, r=row: self._on_delete_roi(r))
             action_layout.addWidget(delete_btn)
+
+            if self._is_extendable(roi):
+                extend_btn = qt.QPushButton("\u270E")
+                extend_btn.setFixedSize(24, 24)
+                extend_btn.setToolTip("Extend from the latest control point")
+                extend_btn.clicked.connect(lambda checked, r=row: self._begin_extend_roi(r))
+                action_layout.addWidget(extend_btn)
+
+            handles_cb = qt.QCheckBox("Move")
+            handles_cb.setToolTip("Show move/rotate handles for this ROI")
+            handles_cb.blockSignals(True)
+            handles_cb.setChecked(roi.transform_handles_enabled)
+            handles_cb.blockSignals(False)
+            handles_cb.toggled.connect(
+                lambda checked, target=roi: self._on_roi_transform_handles_toggled(target, checked)
+            )
+            action_layout.addWidget(handles_cb)
 
             self._table.setCellWidget(row, 1, action_widget)
 
@@ -857,12 +1166,22 @@ class ROITab(qt.QWidget):
         """Select and highlight the corresponding markup node in the scene."""
         if row >= len(self._roi_annotations):
             return
+        self._table.selectRow(row)
         roi = self._roi_annotations[row]
         if roi.mrml_node_id:
             try:
                 node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
                 if node:
                     node.SetDisplayVisibility(True)
+                    display_node = node.GetDisplayNode()
+                    if display_node:
+                        self._configure_markup_display(
+                            display_node, transform_handles=roi.transform_handles_enabled
+                        )
+                    try:
+                        slicer.modules.markups.logic().SetActiveList(node)
+                    except Exception:
+                        pass
                     # Jump to the ROI in the slice view
                     if node.GetNumberOfControlPoints() > 0:
                         pos = [0.0, 0.0, 0.0]
@@ -936,6 +1255,9 @@ class ROITab(qt.QWidget):
 
         class_name = MARKUP_NODE_CLASSES.get(roi_type)
 
+        if roi_type == "line" and len(roi.control_points) > 2:
+            class_name = "vtkMRMLMarkupsCurveNode"
+
         # Legacy ROI types no longer in the toolbar
         if not class_name and roi.roi_type == "ellipse":
             class_name = "vtkMRMLMarkupsClosedCurveNode"
@@ -964,6 +1286,9 @@ class ROITab(qt.QWidget):
 
         for pt in roi.control_points:
             node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
+
+        if class_name == "vtkMRMLMarkupsCurveNode" and roi_type == "line":
+            self._set_curve_linear(node)
 
         if class_name == "vtkMRMLMarkupsROINode" and roi.radii and hasattr(node, "SetSize"):
             try:
@@ -1006,6 +1331,9 @@ class ROITab(qt.QWidget):
             r, g, b = hex_to_rgb_float(roi.color)
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
+            self._configure_markup_display(
+                display_node, transform_handles=roi.transform_handles_enabled
+            )
 
         return node
 
@@ -1016,6 +1344,7 @@ class ROITab(qt.QWidget):
         Finalize the current placement (for polygon/freehand which need
         explicit completion). Called when switching tabs or deactivating tool.
         """
+        self._finish_extend_mode(sync=True)
         if self._placement_node and self._active_tool in ("polygon", "freehand_curve"):
             if self._placement_node.GetNumberOfControlPoints() >= 2:
                 self._finalize_roi(self._placement_node, self._active_tool)
