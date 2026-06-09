@@ -22,13 +22,6 @@ MARKUP_NODE_CLASSES = {
     "line": "vtkMRMLMarkupsLineNode",
 }
 
-DEFAULT_ROI_LABELS = [
-    "Normal",
-    "Pathological",
-    "Artifact",
-    "Motion Blur",
-    "Incomplete Coverage",
-]
 
 
 def hex_to_rgb_float(hex_color):
@@ -53,10 +46,10 @@ class ROITab(qt.QWidget):
     Acts as a controller over Slicer's Markups nodes.
     """
 
-    def __init__(self, annotation_record=None, labels=None, parent=None):
+    def __init__(self, annotation_record=None, parent=None):
         super().__init__(parent)
         self._record = annotation_record
-        self._labels = list(labels) if labels else list(DEFAULT_ROI_LABELS)
+        self._roi_labels = []  # List[LabelDefinition] from config
         self._roi_annotations = []  # List[ROIAnnotation]
         self._volume_node = None
         self._current_color = "#ff0000"
@@ -126,9 +119,7 @@ class ROITab(qt.QWidget):
         row1 = qt.QHBoxLayout()
         row1.addWidget(qt.QLabel("Label for next ROI:"))
         self._label_combo = qt.QComboBox()
-        self._label_combo.addItem("(No label)")
-        for lbl in self._labels:
-            self._label_combo.addItem(lbl)
+        self._label_combo.currentIndexChanged.connect(self._on_label_selection_changed)
         row1.addWidget(self._label_combo)
         row1.addStretch()
         label_layout.addLayout(row1)
@@ -456,18 +447,28 @@ class ROITab(qt.QWidget):
         """Return the list of ROIAnnotation objects."""
         return list(self._roi_annotations)
 
-    def refresh_labels(self, labels):
-        """Update the label combo box with a new set of labels."""
-        self._labels = list(labels)
-        current_text = self._label_combo.currentText
+    def set_labels(self, labels):
+        """Populate the ROI label dropdown from configured labels (LabelDefinition list)."""
+        self._roi_labels = list(labels)
+        self._label_combo.blockSignals(True)
         self._label_combo.clear()
-        self._label_combo.addItem("(No label)")
-        for lbl in self._labels:
-            self._label_combo.addItem(lbl)
-        # Restore selection if still available
-        idx = self._label_combo.findText(current_text)
-        if idx >= 0:
-            self._label_combo.setCurrentIndex(idx)
+        for label_def in self._roi_labels:
+            self._label_combo.addItem(label_def.name)
+        self._label_combo.blockSignals(False)
+        if self._roi_labels:
+            self._current_color = self._roi_labels[0].color
+            self._color_btn.setStyleSheet(
+                f"background-color: {self._current_color}; border: 1px solid #333;"
+            )
+
+    def _on_label_selection_changed(self, index):
+        """Auto-set color from the selected label's configured color."""
+        if 0 <= index < len(self._roi_labels):
+            label_def = self._roi_labels[index]
+            self._current_color = label_def.color
+            self._color_btn.setStyleSheet(
+                f"background-color: {self._current_color}; border: 1px solid #333;"
+            )
 
     def load_rois(self, rois):
         """
@@ -486,12 +487,12 @@ class ROITab(qt.QWidget):
         self._volume_node = volume_node
 
     def clear_and_unbind(self):
-        """Remove all ROI nodes from the scene, clear table, reset state."""
+        """Remove all ROI nodes from the scene, clear table, reset state.
+        Labels persist from config — only annotations are cleared."""
         self.cancel_placement()
         self._remove_interaction_observer()
         for node_id in list(self._node_observers.keys()):
             self._remove_node_observers(node_id)
-        # Remove markup nodes created by this tab
         for roi in self._roi_annotations:
             if roi.mrml_node_id:
                 try:
@@ -528,9 +529,7 @@ class ROITab(qt.QWidget):
 
     def _get_selected_label(self):
         text = self._label_combo.currentText
-        if text == "(No label)":
-            return ""
-        return text
+        return text if text else ""
 
     def _on_pick_color(self):
         initial = qt.QColor(self._current_color)
@@ -654,9 +653,8 @@ class ROITab(qt.QWidget):
         # Label combo
         dlg_layout.addWidget(qt.QLabel("Label:"))
         combo = qt.QComboBox()
-        combo.addItem("(No label)")
-        for lbl in self._labels:
-            combo.addItem(lbl)
+        for lbl_def in self._roi_labels:
+            combo.addItem(lbl_def.name)
         if roi.label:
             idx = combo.findText(roi.label)
             if idx >= 0:
@@ -691,9 +689,7 @@ class ROITab(qt.QWidget):
         dlg_layout.addWidget(btn_box)
 
         if dialog.exec_() == qt.QDialog.Accepted:
-            new_label = combo.currentText
-            if new_label == "(No label)":
-                new_label = ""
+            new_label = combo.currentText if combo.currentText else ""
             roi.label = new_label
             roi.color = edit_color[0]
 

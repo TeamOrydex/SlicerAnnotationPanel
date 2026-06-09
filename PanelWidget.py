@@ -3,25 +3,31 @@ import qt
 import json
 import slicer
 
-from AnnotationModel import AnnotationRecord, ScanMetadata
+from AnnotationModel import AnnotationRecord, ScanMetadata, LabelConfig
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
 from SegmentationTab import SegmentationTab
+from ConfigurationScreen import ConfigurationScreen
 
 
 class AnnotationPanelRootWidget(qt.QWidget):
     """
-    Root panel widget: scan upload, header, tab bar, and action bar.
+    Root panel widget: scan upload, configuration screen, tab bar, action bar.
     Manages a single AnnotationRecord and coordinates annotation workflow.
+
+    Flow:
+      1. Configuration screen shown (define labels)
+      2. Scan upload (always visible)
+      3. Once both config and scan are ready, annotation tabs become interactive
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._record = AnnotationRecord()
         self._active_volume_node = None
+        self._label_config = None  # LabelConfig, set after config is confirmed
         self._setup_ui()
-        self._connect_label_sync()
-        self._set_scan_state(loaded=False)
+        self._update_readiness()
 
     # ─── UI Setup ────────────────────────────────────────────────────────
 
@@ -29,15 +35,14 @@ class AnnotationPanelRootWidget(qt.QWidget):
         main_layout = qt.QVBoxLayout(self)
 
         self._build_scan_section(main_layout)
-        self._build_header(main_layout)
-        self._build_tabs(main_layout)
+        self._build_stacked_area(main_layout)
         self._build_action_bar(main_layout)
 
     def _build_scan_section(self, parent_layout):
         self._scan_group = qt.QGroupBox("Scan")
         scan_layout = qt.QVBoxLayout(self._scan_group)
 
-        # No-scan state widgets
+        # No-scan state
         self._no_scan_widget = qt.QWidget()
         no_scan_layout = qt.QVBoxLayout(self._no_scan_widget)
         no_scan_layout.setContentsMargins(0, 0, 0, 0)
@@ -58,7 +63,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         scan_layout.addWidget(self._no_scan_widget)
 
-        # Scan-loaded state widgets
+        # Scan-loaded state
         self._scan_info_widget = qt.QWidget()
         info_layout = qt.QVBoxLayout(self._scan_info_widget)
         info_layout.setContentsMargins(0, 0, 0, 0)
@@ -82,10 +87,23 @@ class AnnotationPanelRootWidget(qt.QWidget):
         info_layout.addLayout(change_row)
 
         scan_layout.addWidget(self._scan_info_widget)
+        self._scan_info_widget.setVisible(False)
 
         parent_layout.addWidget(self._scan_group)
 
-    def _build_header(self, parent_layout):
+    def _build_stacked_area(self, parent_layout):
+        self._stacked_widget = qt.QStackedWidget()
+
+        # Page 0: Configuration Screen
+        self._config_screen = ConfigurationScreen()
+        self._config_screen.set_confirm_callback(self._on_config_confirmed)
+        self._stacked_widget.addWidget(self._config_screen)
+
+        # Page 1: Annotation Area (header + tabs)
+        self._annotation_area = qt.QWidget()
+        ann_layout = qt.QVBoxLayout(self._annotation_area)
+
+        # Header with study/series info and Edit Configuration button
         header_frame = qt.QFrame()
         header_frame.setFrameShape(qt.QFrame.StyledPanel)
         header_layout = qt.QHBoxLayout(header_frame)
@@ -96,22 +114,31 @@ class AnnotationPanelRootWidget(qt.QWidget):
         header_layout.addWidget(self._series_label)
         header_layout.addStretch()
 
-        parent_layout.addWidget(header_frame)
+        self._edit_config_btn = qt.QPushButton("Edit Configuration")
+        self._edit_config_btn.setStyleSheet("color: #1976D2;")
+        self._edit_config_btn.clicked.connect(self._on_edit_config_clicked)
+        header_layout.addWidget(self._edit_config_btn)
 
-    def _build_tabs(self, parent_layout):
+        ann_layout.addWidget(header_frame)
+
+        # Tabs
         self._tab_widget = qt.QTabWidget()
-
-        self._class_label_tab = ClassLabelTab(annotation_record=self._record)
-        self._roi_tab = ROITab(annotation_record=self._record)
+        self._class_label_tab = ClassLabelTab()
+        self._roi_tab = ROITab()
         self._segmentation_tab = SegmentationTab()
 
         self._tab_widget.addTab(self._class_label_tab, "Class Labels")
         self._tab_widget.addTab(self._roi_tab, "ROI")
         self._tab_widget.addTab(self._segmentation_tab, "Segmentation")
-
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
-        parent_layout.addWidget(self._tab_widget)
+        ann_layout.addWidget(self._tab_widget)
+
+        self._stacked_widget.addWidget(self._annotation_area)
+
+        # Start on config screen
+        self._stacked_widget.setCurrentIndex(0)
+        parent_layout.addWidget(self._stacked_widget)
 
     def _build_action_bar(self, parent_layout):
         separator = qt.QFrame()
@@ -135,6 +162,103 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         btn_layout.addStretch()
         parent_layout.addLayout(btn_layout)
+
+    # ─── Configuration ───────────────────────────────────────────────────
+
+    def _on_config_confirmed(self, config):
+        """Called when user confirms label configuration."""
+        if self._label_config is not None:
+            self._handle_config_changes(self._label_config, config)
+
+        self._label_config = config
+        self._record.label_config = config
+        self._push_labels_to_tabs(config)
+        self._stacked_widget.setCurrentIndex(1)
+        self._update_readiness()
+
+    def _on_edit_config_clicked(self):
+        """Return to config screen for editing."""
+        result = qt.QMessageBox.warning(
+            self, "Edit Configuration",
+            "Editing the configuration may invalidate existing annotations "
+            "if you remove labels that are already in use.\n\nContinue?",
+            qt.QMessageBox.Yes | qt.QMessageBox.No,
+            qt.QMessageBox.No,
+        )
+        if result != qt.QMessageBox.Yes:
+            return
+        self._config_screen.load_config(self._label_config)
+        self._stacked_widget.setCurrentIndex(0)
+
+    def _push_labels_to_tabs(self, config):
+        """Push configured labels to all annotation tabs."""
+        self._class_label_tab.set_labels(config.class_labels)
+        self._roi_tab.set_labels(config.roi_labels)
+        self._segmentation_tab.set_labels(config.segmentation_classes)
+
+    def _handle_config_changes(self, old_config, new_config):
+        """Handle label additions, renames, and removals when re-configuring."""
+        self._handle_class_label_changes(old_config.class_labels, new_config.class_labels)
+        self._handle_roi_label_changes(old_config.roi_labels, new_config.roi_labels)
+        self._handle_seg_class_changes(old_config.segmentation_classes, new_config.segmentation_classes)
+
+    def _handle_class_label_changes(self, old_labels, new_labels):
+        """Update class_labels in record when config changes."""
+        old_map = {lbl.id: lbl.name for lbl in old_labels}
+        new_map = {lbl.id: lbl.name for lbl in new_labels}
+
+        updated = []
+        warnings = []
+        for name in self._record.class_labels:
+            old_id = next((lid for lid, lname in old_map.items() if lname == name), None)
+            if old_id and old_id in new_map:
+                updated.append(new_map[old_id])
+            elif old_id and old_id not in new_map:
+                warnings.append(name)
+            else:
+                updated.append(name)
+
+        self._record.class_labels = updated
+        if warnings:
+            qt.QMessageBox.information(
+                self, "Labels Removed",
+                "The following class labels were in use and have been removed:\n" +
+                ", ".join(warnings)
+            )
+
+    def _handle_roi_label_changes(self, old_labels, new_labels):
+        """Update ROI annotations when their labels are renamed or removed."""
+        old_map = {lbl.id: lbl.name for lbl in old_labels}
+        new_map = {lbl.id: lbl.name for lbl in new_labels}
+
+        warnings = []
+        for roi in self._record.rois:
+            old_id = next((lid for lid, lname in old_map.items() if lname == roi.label), None)
+            if old_id and old_id in new_map:
+                roi.label = new_map[old_id]
+            elif old_id and old_id not in new_map:
+                warnings.append(f"ROI '{roi.roi_type}' had label '{roi.label}'")
+                roi.label = ""
+
+        if warnings:
+            qt.QMessageBox.information(
+                self, "ROI Labels Removed",
+                "Some ROI labels were removed. Affected ROIs:\n" +
+                "\n".join(warnings)
+            )
+
+    def _handle_seg_class_changes(self, old_labels, new_labels):
+        """Handle segment removals gracefully (segments recreated from config)."""
+        pass
+
+    # ─── Readiness ───────────────────────────────────────────────────────
+
+    def _update_readiness(self):
+        """Enable annotation tabs only when both config and scan are ready."""
+        ready = (self._label_config is not None) and (self._active_volume_node is not None)
+        self._tab_widget.setEnabled(ready)
+        self._save_draft_btn.setEnabled(ready)
+        self._export_btn.setEnabled(ready)
 
     # ─── Scan Upload ─────────────────────────────────────────────────────
 
@@ -189,19 +313,17 @@ class AnnotationPanelRootWidget(qt.QWidget):
     def _on_scan_loaded(self, volume_node, source_path=""):
         self._active_volume_node = volume_node
 
-        # Display scan in slice views
         slicer.util.setSliceViewerLayers(background=volume_node)
         slicer.util.resetSliceViews()
 
-        # Build scan metadata
         self._record.scan = self._build_scan_metadata(volume_node, source_path)
 
-        # Bind volume to all tabs
         self._class_label_tab.set_volume(volume_node)
         self._roi_tab.set_volume(volume_node)
         self._segmentation_tab.set_volume(volume_node)
 
         self._set_scan_state(loaded=True)
+        self._update_readiness()
 
     def _on_scan_unloaded(self):
         self._class_label_tab.clear_and_unbind()
@@ -217,6 +339,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._record.scan = None
         slicer.util.resetSliceViews()
         self._set_scan_state(loaded=False)
+        self._update_readiness()
 
     def _on_change_scan(self):
         if not self._confirm_clear():
@@ -243,9 +366,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
     def _set_scan_state(self, loaded):
         self._no_scan_widget.setVisible(not loaded)
         self._scan_info_widget.setVisible(loaded)
-        self._tab_widget.setEnabled(loaded)
-        self._save_draft_btn.setEnabled(loaded)
-        self._export_btn.setEnabled(loaded)
 
         if loaded and self._active_volume_node:
             name = self._active_volume_node.GetName()
@@ -271,7 +391,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         meta.filepath = source_path
         meta.filename = os.path.basename(source_path) if source_path else volume_node.GetName()
 
-        # Infer format from extension
         ext = os.path.splitext(source_path)[-1].lower() if source_path else ""
         if ext in (".nrrd",):
             meta.file_format = "nrrd"
@@ -288,7 +407,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         meta.spacing = list(volume_node.GetSpacing())
         meta.origin = list(volume_node.GetOrigin())
 
-        # Try to get DICOM metadata
         try:
             inst_uids = volume_node.GetAttribute("DICOM.instanceUIDs")
             if inst_uids:
@@ -302,31 +420,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
             pass
 
         return meta
-
-    # ─── Label Synchronization ───────────────────────────────────────────
-
-    def _connect_label_sync(self):
-        """Connect ClassLabelTab checkbox changes to ROI tab label refresh."""
-        original_toggled = self._class_label_tab._on_checkbox_toggled
-        original_add = self._class_label_tab._on_add_custom
-
-        def patched_toggled(checked):
-            original_toggled(checked)
-            self._sync_labels_to_roi_tab()
-
-        def patched_add():
-            original_add()
-            self._sync_labels_to_roi_tab()
-
-        self._class_label_tab._on_checkbox_toggled = patched_toggled
-        self._class_label_tab._on_add_custom = patched_add
-
-        self._sync_labels_to_roi_tab()
-
-    def _sync_labels_to_roi_tab(self):
-        """Push the current label list from ClassLabelTab to ROITab's combo box."""
-        all_labels = list(self._class_label_tab._checkboxes.keys())
-        self._roi_tab.refresh_labels(all_labels)
 
     # ─── Tab Switching ───────────────────────────────────────────────────
 
@@ -353,10 +446,12 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def set_record(self, record):
         self._record = record
-        self._class_label_tab.set_annotation_record(record)
         self._roi_tab.set_annotation_record(record)
         self._study_label.setText(f"Study: {record.study_id}")
         self._series_label.setText(f"Series: {record.series_id}")
+
+        if record.class_labels:
+            self._class_label_tab.set_selected_labels(record.class_labels)
 
         if record.rois:
             self._roi_tab.load_rois(record.rois)
@@ -369,6 +464,21 @@ class AnnotationPanelRootWidget(qt.QWidget):
         with open(filepath, "r") as f:
             data = json.load(f)
         record = AnnotationRecord.from_dict(data)
+
+        # Restore label configuration
+        if record.label_config:
+            self._label_config = record.label_config
+            self._record.label_config = record.label_config
+            self._config_screen.load_config(record.label_config)
+            self._push_labels_to_tabs(record.label_config)
+            self._stacked_widget.setCurrentIndex(1)
+        else:
+            self._stacked_widget.setCurrentIndex(0)
+            qt.QMessageBox.information(
+                self, "No Configuration",
+                "This draft has no label configuration. "
+                "Please define labels before proceeding."
+            )
 
         # Try to auto-load the referenced scan
         if record.scan and record.scan.filepath:
@@ -388,6 +498,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
                 )
 
         self.set_record(record)
+        self._update_readiness()
 
     def cleanup(self):
         """Clean up observers when the panel is destroyed."""
@@ -458,7 +569,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
             if success:
                 self._record.segmentation.export_filepath = seg_path
                 exported_files.append("segmentation.nrrd")
-                # Re-write annotation.json with updated export_filepath
                 with open(annotation_path, "w") as f:
                     f.write(self._record.to_json())
 

@@ -6,36 +6,74 @@ from datetime import datetime, timezone
 
 
 @dataclass
+class LabelDefinition:
+    """A single label definition used in configuration."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = ""
+    color: str = "#ff0000"
+    description: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "color": self.color,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LabelDefinition":
+        return cls(
+            id=data.get("id", str(uuid.uuid4())),
+            name=data.get("name", ""),
+            color=data.get("color", "#ff0000"),
+            description=data.get("description", ""),
+        )
+
+
+@dataclass
+class LabelConfig:
+    """
+    Centralized label configuration. Defined once before annotation begins.
+    Each list feeds into its corresponding tab.
+    """
+    class_labels: List[LabelDefinition] = field(default_factory=list)
+    roi_labels: List[LabelDefinition] = field(default_factory=list)
+    segmentation_classes: List[LabelDefinition] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "class_labels": [lbl.to_dict() for lbl in self.class_labels],
+            "roi_labels": [lbl.to_dict() for lbl in self.roi_labels],
+            "segmentation_classes": [lbl.to_dict() for lbl in self.segmentation_classes],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LabelConfig":
+        return cls(
+            class_labels=[LabelDefinition.from_dict(d) for d in data.get("class_labels", [])],
+            roi_labels=[LabelDefinition.from_dict(d) for d in data.get("roi_labels", [])],
+            segmentation_classes=[LabelDefinition.from_dict(d) for d in data.get("segmentation_classes", [])],
+        )
+
+
+@dataclass
 class ROIAnnotation:
     """
     A single ROI annotation drawn on the scan.
-    Coordinates are stored in RAS (Right-Anterior-Superior) world coordinates,
-    which is Slicer's native coordinate system for markups.
+    Coordinates are stored in RAS (Right-Anterior-Superior) world coordinates.
     """
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     roi_type: str = ""
-    # roi_type values: "ellipse", "rectangle", "polygon", "freehand_curve", "line"
-
     label: str = ""
     color: str = "#ff0000"
-
-    # Slice context
-    slice_view: str = ""        # "Red", "Green", "Yellow"
+    slice_view: str = ""
     slice_index: int = 0
-
-    # Geometry: ordered list of control points (3D RAS)
-    # Each point is {"x": float, "y": float, "z": float}
     control_points: list = field(default_factory=list)
-
-    # Ellipse/rectangle-specific
-    radii: list = field(default_factory=list)        # [rx, ry] for ellipse, [w, h] for rect
-    orientation: list = field(default_factory=list)   # 3x3 rotation matrix as flat 9-element list
-
-    # Metadata
+    radii: list = field(default_factory=list)
+    orientation: list = field(default_factory=list)
     description: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-    # Runtime-only reference to Slicer MRML node (excluded from serialization)
     mrml_node_id: str = ""
 
     def to_dict(self) -> dict:
@@ -103,27 +141,17 @@ class SegmentLabel:
 
 @dataclass
 class SegmentationData:
-    """
-    Segmentation mask data for the annotation.
-    The actual voxel data lives in the Slicer scene as a vtkMRMLSegmentationNode.
-    This dataclass stores metadata and export references.
-    """
+    """Segmentation mask metadata. Voxel data lives in the Slicer scene."""
     labels: List[SegmentLabel] = field(default_factory=list)
-
     export_format: str = "nrrd"
     export_filepath: str = ""
-
     source_volume_node_id: str = ""
-
-    # Runtime reference (not serialized)
     segmentation_node_id: str = ""
-
-    # Statistics
     total_voxel_count: int = 0
     per_label_voxel_counts: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        """Serialize to dict. Excludes segmentation_node_id (runtime only)."""
+        """Excludes segmentation_node_id (runtime only)."""
         return {
             "labels": [lbl.to_dict() for lbl in self.labels],
             "export_format": self.export_format,
@@ -149,10 +177,7 @@ class SegmentationData:
 
 @dataclass
 class ScanMetadata:
-    """
-    Metadata about the uploaded scan being annotated.
-    Stored with the annotation so the export is traceable back to its source.
-    """
+    """Metadata about the uploaded scan being annotated."""
     filename: str = ""
     filepath: str = ""
     file_format: str = ""
@@ -162,12 +187,10 @@ class ScanMetadata:
     modality: str = ""
     patient_id: str = ""
     study_description: str = ""
-
-    # Runtime reference (not serialized)
     volume_node_id: str = ""
 
     def to_dict(self) -> dict:
-        """Serialize to dict. Excludes volume_node_id (runtime only)."""
+        """Excludes volume_node_id (runtime only)."""
         return {
             "filename": self.filename,
             "filepath": self.filepath,
@@ -198,38 +221,28 @@ class ScanMetadata:
 
 @dataclass
 class AnnotationRecord:
-    """
-    Top-level annotation record. One per study/series being annotated.
-    """
-    # Identity
+    """Top-level annotation record. One per study/series being annotated."""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     study_id: str = ""
     series_id: str = ""
-
-    # Metadata
     created_by: str = ""
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
-    # Scan info
+    label_config: Optional[LabelConfig] = None
     scan: Optional[ScanMetadata] = None
 
-    # Mode A -- Class Labels
     class_labels: List[str] = field(default_factory=list)
-
-    # Mode B -- ROIs
     rois: List[ROIAnnotation] = field(default_factory=list)
-
-    # Mode C -- Segmentation
     segmentation: Optional[SegmentationData] = None
 
     def to_dict(self) -> dict:
-        """Serialize to a plain dict (JSON-safe)."""
         return {
             "id": self.id,
             "study_id": self.study_id,
             "series_id": self.series_id,
             "created_by": self.created_by,
             "created_at": self.created_at,
+            "label_config": self.label_config.to_dict() if self.label_config else None,
             "scan": self.scan.to_dict() if self.scan else None,
             "class_labels": list(self.class_labels),
             "rois": [roi.to_dict() for roi in self.rois],
@@ -244,6 +257,8 @@ class AnnotationRecord:
         segmentation = SegmentationData.from_dict(seg_data) if seg_data else None
         scan_data = data.get("scan")
         scan = ScanMetadata.from_dict(scan_data) if scan_data else None
+        lc_data = data.get("label_config")
+        label_config = LabelConfig.from_dict(lc_data) if lc_data else None
 
         return cls(
             id=data.get("id", str(uuid.uuid4())),
@@ -251,6 +266,7 @@ class AnnotationRecord:
             series_id=data.get("series_id", ""),
             created_by=data.get("created_by", ""),
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            label_config=label_config,
             scan=scan,
             class_labels=data.get("class_labels", []),
             rois=rois,

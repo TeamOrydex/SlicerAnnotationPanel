@@ -7,7 +7,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from AnnotationModel import (
-    AnnotationRecord, ROIAnnotation, SegmentationData, SegmentLabel, ScanMetadata
+    AnnotationRecord, ROIAnnotation, SegmentationData, SegmentLabel, ScanMetadata,
+    LabelDefinition, LabelConfig
 )
 
 
@@ -42,7 +43,7 @@ class TestToDict(unittest.TestCase):
         d = record.to_dict()
         expected_keys = {
             "id", "study_id", "series_id", "created_by", "created_at",
-            "scan", "class_labels", "rois", "segmentation",
+            "label_config", "scan", "class_labels", "rois", "segmentation",
         }
         self.assertEqual(set(d.keys()), expected_keys)
 
@@ -406,6 +407,188 @@ class TestAnnotationRecordWithScan(unittest.TestCase):
         self.assertEqual(len(restored.rois), 1)
         self.assertEqual(restored.segmentation.labels[0].name, "Tumor")
         self.assertEqual(restored.segmentation.total_voxel_count, 1234)
+
+
+class TestLabelDefinition(unittest.TestCase):
+    def test_default_creation(self):
+        lbl = LabelDefinition()
+        self.assertTrue(len(lbl.id) > 0)
+        self.assertEqual(lbl.name, "")
+        self.assertEqual(lbl.color, "#ff0000")
+        self.assertEqual(lbl.description, "")
+
+    def test_creation_with_values(self):
+        lbl = LabelDefinition(name="Tumor", color="#e6194b", description="Tumor region")
+        self.assertEqual(lbl.name, "Tumor")
+        self.assertEqual(lbl.color, "#e6194b")
+        self.assertEqual(lbl.description, "Tumor region")
+
+    def test_to_dict(self):
+        lbl = LabelDefinition(id="test-id", name="Edema", color="#3cb44b", description="Swelling")
+        d = lbl.to_dict()
+        self.assertEqual(d["id"], "test-id")
+        self.assertEqual(d["name"], "Edema")
+        self.assertEqual(d["color"], "#3cb44b")
+        self.assertEqual(d["description"], "Swelling")
+
+    def test_from_dict_round_trip(self):
+        lbl = LabelDefinition(name="Necrosis", color="#911eb4", description="Dead tissue")
+        d = lbl.to_dict()
+        restored = LabelDefinition.from_dict(d)
+        self.assertEqual(restored.id, lbl.id)
+        self.assertEqual(restored.name, "Necrosis")
+        self.assertEqual(restored.color, "#911eb4")
+        self.assertEqual(restored.description, "Dead tissue")
+
+    def test_id_stability_across_rename(self):
+        lbl = LabelDefinition(name="OldName", color="#000000")
+        original_id = lbl.id
+        lbl.name = "NewName"
+        self.assertEqual(lbl.id, original_id)
+
+    def test_from_dict_missing_fields(self):
+        data = {"name": "Minimal"}
+        lbl = LabelDefinition.from_dict(data)
+        self.assertEqual(lbl.name, "Minimal")
+        self.assertEqual(lbl.color, "#ff0000")
+        self.assertEqual(lbl.description, "")
+        self.assertTrue(len(lbl.id) > 0)
+
+
+class TestLabelConfig(unittest.TestCase):
+    def test_default_creation(self):
+        config = LabelConfig()
+        self.assertEqual(config.class_labels, [])
+        self.assertEqual(config.roi_labels, [])
+        self.assertEqual(config.segmentation_classes, [])
+
+    def test_creation_with_labels(self):
+        config = LabelConfig(
+            class_labels=[LabelDefinition(name="Normal"), LabelDefinition(name="Abnormal")],
+            roi_labels=[LabelDefinition(name="Tumor")],
+            segmentation_classes=[LabelDefinition(name="Tumor Core")],
+        )
+        self.assertEqual(len(config.class_labels), 2)
+        self.assertEqual(len(config.roi_labels), 1)
+        self.assertEqual(len(config.segmentation_classes), 1)
+
+    def test_to_dict(self):
+        config = LabelConfig(
+            class_labels=[LabelDefinition(name="Normal", color="#4CAF50")],
+            roi_labels=[LabelDefinition(name="Tumor", color="#e6194b")],
+            segmentation_classes=[LabelDefinition(name="Edema", color="#3cb44b")],
+        )
+        d = config.to_dict()
+        self.assertEqual(len(d["class_labels"]), 1)
+        self.assertEqual(d["class_labels"][0]["name"], "Normal")
+        self.assertEqual(len(d["roi_labels"]), 1)
+        self.assertEqual(d["roi_labels"][0]["name"], "Tumor")
+        self.assertEqual(len(d["segmentation_classes"]), 1)
+        self.assertEqual(d["segmentation_classes"][0]["name"], "Edema")
+
+    def test_from_dict_round_trip(self):
+        config = LabelConfig(
+            class_labels=[
+                LabelDefinition(name="Normal", color="#4CAF50", description="No findings"),
+                LabelDefinition(name="Pathological", color="#f44336", description="Has findings"),
+            ],
+            roi_labels=[
+                LabelDefinition(name="Tumor", color="#e6194b"),
+                LabelDefinition(name="Lesion", color="#f58231"),
+            ],
+            segmentation_classes=[
+                LabelDefinition(name="Tumor Core", color="#e6194b"),
+                LabelDefinition(name="Edema", color="#3cb44b"),
+            ],
+        )
+        d = config.to_dict()
+        restored = LabelConfig.from_dict(d)
+        self.assertEqual(len(restored.class_labels), 2)
+        self.assertEqual(restored.class_labels[0].name, "Normal")
+        self.assertEqual(restored.class_labels[1].name, "Pathological")
+        self.assertEqual(len(restored.roi_labels), 2)
+        self.assertEqual(len(restored.segmentation_classes), 2)
+
+    def test_empty_categories_round_trip(self):
+        config = LabelConfig(
+            class_labels=[LabelDefinition(name="Normal")],
+            roi_labels=[],
+            segmentation_classes=[],
+        )
+        d = config.to_dict()
+        restored = LabelConfig.from_dict(d)
+        self.assertEqual(len(restored.class_labels), 1)
+        self.assertEqual(restored.roi_labels, [])
+        self.assertEqual(restored.segmentation_classes, [])
+
+    def test_from_dict_empty_data(self):
+        config = LabelConfig.from_dict({})
+        self.assertEqual(config.class_labels, [])
+        self.assertEqual(config.roi_labels, [])
+        self.assertEqual(config.segmentation_classes, [])
+
+
+class TestAnnotationRecordWithLabelConfig(unittest.TestCase):
+    def test_record_with_label_config_round_trip(self):
+        config = LabelConfig(
+            class_labels=[LabelDefinition(name="Normal", color="#4CAF50")],
+            roi_labels=[LabelDefinition(name="Tumor", color="#e6194b")],
+            segmentation_classes=[LabelDefinition(name="Edema", color="#3cb44b")],
+        )
+        record = AnnotationRecord(label_config=config, class_labels=["Normal"])
+        d = record.to_dict()
+        self.assertIsNotNone(d["label_config"])
+        self.assertEqual(d["label_config"]["class_labels"][0]["name"], "Normal")
+
+        restored = AnnotationRecord.from_dict(d)
+        self.assertIsNotNone(restored.label_config)
+        self.assertEqual(len(restored.label_config.class_labels), 1)
+        self.assertEqual(restored.label_config.class_labels[0].name, "Normal")
+        self.assertEqual(len(restored.label_config.roi_labels), 1)
+
+    def test_record_with_none_label_config(self):
+        record = AnnotationRecord(label_config=None)
+        d = record.to_dict()
+        self.assertIsNone(d["label_config"])
+        restored = AnnotationRecord.from_dict(d)
+        self.assertIsNone(restored.label_config)
+
+    def test_from_dict_without_label_config_key(self):
+        """Old format without label_config field loads fine."""
+        data = {
+            "id": "no-config",
+            "class_labels": ["Normal"],
+            "rois": [],
+        }
+        record = AnnotationRecord.from_dict(data)
+        self.assertIsNone(record.label_config)
+        self.assertEqual(record.class_labels, ["Normal"])
+
+    def test_preset_json_format(self):
+        """Verify preset dict can be converted to LabelConfig."""
+        preset = {
+            "class_labels": [
+                {"name": "Normal", "color": "#4CAF50", "description": "No findings"},
+            ],
+            "roi_labels": [
+                {"name": "Tumor", "color": "#e6194b", "description": "Tumor region"},
+            ],
+            "segmentation_classes": [
+                {"name": "Edema", "color": "#3cb44b", "description": "Swelling"},
+            ],
+        }
+        config = LabelConfig(
+            class_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d["description"])
+                          for d in preset["class_labels"]],
+            roi_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d["description"])
+                        for d in preset["roi_labels"]],
+            segmentation_classes=[LabelDefinition(name=d["name"], color=d["color"], description=d["description"])
+                                  for d in preset["segmentation_classes"]],
+        )
+        d = config.to_dict()
+        restored = LabelConfig.from_dict(d)
+        self.assertEqual(restored.class_labels[0].name, "Normal")
+        self.assertEqual(restored.roi_labels[0].description, "Tumor region")
 
 
 class TestBackwardCompatibility(unittest.TestCase):

@@ -42,6 +42,16 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         import qt
         from PanelWidget import AnnotationPanelRootWidget
 
+        self._load_preset_btn = qt.QPushButton("Load Brain Tumor Preset")
+        self._load_preset_btn.setStyleSheet(
+            "QPushButton { padding: 8px 16px; font-weight: bold; }"
+        )
+        self._load_preset_btn.setToolTip(
+            "Loads Brain Tumor Annotation preset into the config screen and confirms"
+        )
+        self._load_preset_btn.clicked.connect(self._on_load_preset)
+        self.layout.addWidget(self._load_preset_btn)
+
         self._load_via_panel_btn = qt.QPushButton("Load MRHead via Panel")
         self._load_via_panel_btn.setStyleSheet(
             "QPushButton { padding: 8px 16px; font-weight: bold; }"
@@ -57,24 +67,21 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         self._sample_roi_btn.clicked.connect(self._on_add_sample_rois)
         self.layout.addWidget(self._sample_roi_btn)
 
-        self._sample_seg_btn = qt.QPushButton("Add Sample Segmentation")
-        self._sample_seg_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
-        self._sample_seg_btn.clicked.connect(self._on_add_sample_segmentation)
-        self.layout.addWidget(self._sample_seg_btn)
-
-        self._test_export_btn = qt.QPushButton("Test Export")
-        self._test_export_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
-        self._test_export_btn.setToolTip("Export annotations to a temp directory")
-        self._test_export_btn.clicked.connect(self._on_test_export)
-        self.layout.addWidget(self._test_export_btn)
-
-        self._test_full_btn = qt.QPushButton("Test Full Workflow")
+        self._test_full_btn = qt.QPushButton("Test Config \u2192 Annotate \u2192 Export")
         self._test_full_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
         self._test_full_btn.setToolTip(
-            "Load MRHead, add annotations, export, and verify"
+            "Load preset, confirm config, load MRHead, annotate, export, verify"
         )
         self._test_full_btn.clicked.connect(self._on_test_full_workflow)
         self.layout.addWidget(self._test_full_btn)
+
+        self._test_config_edit_btn = qt.QPushButton("Test Config Edit")
+        self._test_config_edit_btn.setStyleSheet("QPushButton { padding: 8px 16px; }")
+        self._test_config_edit_btn.setToolTip(
+            "Load preset, confirm, annotate, re-edit config, verify cleanup"
+        )
+        self._test_config_edit_btn.clicked.connect(self._on_test_config_edit)
+        self.layout.addWidget(self._test_config_edit_btn)
 
         separator = qt.QFrame()
         separator.setFrameShape(qt.QFrame.HLine)
@@ -86,6 +93,26 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         self.layout.addWidget(self._panel)
 
         self.layout.addStretch(1)
+
+    def _on_load_preset(self):
+        """Load Brain Tumor Annotation preset into config screen and confirm."""
+        from ConfigurationScreen import PRESETS
+        from AnnotationModel import LabelDefinition, LabelConfig
+
+        preset = PRESETS["Brain Tumor Annotation"]
+        config = LabelConfig(
+            class_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
+                          for d in preset["class_labels"]],
+            roi_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
+                        for d in preset["roi_labels"]],
+            segmentation_classes=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
+                                  for d in preset["segmentation_classes"]],
+        )
+        self._panel._config_screen.load_config(config)
+        self._panel._on_config_confirmed(config)
+        slicer.util.infoDisplay(
+            "Brain Tumor Annotation preset loaded and confirmed.", "Test Harness"
+        )
 
     def _on_load_via_panel(self):
         """Load MRHead through the panel's scan binding workflow."""
@@ -110,8 +137,8 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         sample_rois = [
             ROIAnnotation(
                 roi_type="line",
-                label="Measurement",
-                color="#00ff00",
+                label="Tumor",
+                color="#e6194b",
                 slice_view="Red",
                 slice_index=0,
                 control_points=[
@@ -122,7 +149,7 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
             ROIAnnotation(
                 roi_type="polygon",
                 label="Lesion",
-                color="#ff0000",
+                color="#f58231",
                 slice_view="Red",
                 slice_index=0,
                 control_points=[
@@ -140,111 +167,37 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
             f"Added {len(sample_rois)} sample ROIs.", "Test Harness"
         )
 
-    def _on_add_sample_segmentation(self):
-        """Create a sample segmentation with sphere segments."""
-        import vtk
-
-        volume_node = self._panel._active_volume_node
-        if volume_node is None:
-            slicer.util.warningDisplay(
-                "Load a scan first.", "Test Harness"
-            )
-            return
-
-        seg_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-        seg_node.CreateDefaultDisplayNodes()
-        seg_node.SetReferenceImageGeometryParameterFromVolumeNode(volume_node)
-        seg_node.SetName("TestSegmentation")
-
-        sphere1 = vtk.vtkSphereSource()
-        sphere1.SetCenter(0, 0, 0)
-        sphere1.SetRadius(15)
-        sphere1.SetThetaResolution(20)
-        sphere1.SetPhiResolution(20)
-        sphere1.Update()
-        seg_node.AddSegmentFromClosedSurfaceRepresentation(
-            sphere1.GetOutput(), "Tumor", [1.0, 0.0, 0.0]
-        )
-
-        sphere2 = vtk.vtkSphereSource()
-        sphere2.SetCenter(30, 20, 0)
-        sphere2.SetRadius(10)
-        sphere2.SetThetaResolution(20)
-        sphere2.SetPhiResolution(20)
-        sphere2.Update()
-        seg_node.AddSegmentFromClosedSurfaceRepresentation(
-            sphere2.GetOutput(), "Edema", [1.0, 1.0, 0.0]
-        )
-
-        seg_tab = self._panel._segmentation_tab
-        seg_tab._segmentation_node = seg_node
-        seg_tab._link_editor_to_nodes(volume_node)
-        seg_tab._refresh_segment_table()
-        seg_tab._refresh_active_combo()
-
-        display_node = seg_node.GetDisplayNode()
-        if display_node:
-            display_node.SetOpacity(0.5)
-
-        slicer.util.infoDisplay(
-            "Added sample segmentation (Tumor + Edema).", "Test Harness"
-        )
-
-    def _on_test_export(self):
-        """Export annotations to a temp directory."""
-        import json as json_mod
-
-        if self._panel._active_volume_node is None:
-            slicer.util.warningDisplay("Load a scan first.", "Test Harness")
-            return
-
-        self._panel._collect_all_data()
-        record = self._panel._record
-        export_dir = tempfile.mkdtemp(prefix="annotation_export_")
-
-        annotation_path = os.path.join(export_dir, "annotation.json")
-        with open(annotation_path, "w") as f:
-            f.write(record.to_json())
-
-        if record.rois:
-            rois_path = os.path.join(export_dir, "rois.json")
-            with open(rois_path, "w") as f:
-                json_mod.dump([roi.to_dict() for roi in record.rois], f, indent=2)
-
-        if record.scan:
-            scan_path = os.path.join(export_dir, "scan_metadata.json")
-            with open(scan_path, "w") as f:
-                json_mod.dump(record.scan.to_dict(), f, indent=2)
-
-        print(f"Test export directory: {export_dir}")
-        for fname in os.listdir(export_dir):
-            print(f"  - {fname}")
-
-        slicer.util.infoDisplay(
-            f"Test export complete.\nFiles in: {export_dir}", "Test Harness"
-        )
-
     def _on_test_full_workflow(self):
-        """Run a full automated workflow test."""
+        """Full automated workflow: config -> scan -> annotate -> export -> verify."""
         import json as json_mod
+        from ConfigurationScreen import PRESETS
+        from AnnotationModel import LabelDefinition, LabelConfig
 
-        # 1. Load MRHead
+        # 1. Load preset and confirm config
+        preset = PRESETS["Brain Tumor Annotation"]
+        config = LabelConfig(
+            class_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
+                          for d in preset["class_labels"]],
+            roi_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
+                        for d in preset["roi_labels"]],
+            segmentation_classes=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
+                                  for d in preset["segmentation_classes"]],
+        )
+        self._panel._on_config_confirmed(config)
+
+        # 2. Load MRHead
         import SampleData
         volume_node = SampleData.SampleDataLogic().downloadMRHead()
         self._panel._on_scan_loaded(volume_node, "SampleData/MRHead.nrrd")
 
-        # 2. Add class labels
-        self._panel._class_label_tab._checkboxes["Normal"].setChecked(True)
-        self._panel._class_label_tab._checkboxes["Artifact"].setChecked(True)
+        # 3. Select class labels
+        self._panel._class_label_tab.set_selected_labels(["Normal"])
 
-        # 3. Add sample ROIs
+        # 4. Add sample ROIs
         self._on_add_sample_rois()
 
-        # 4. Add sample segmentation
-        self._on_add_sample_segmentation()
-
         # 5. Export
-        export_dir = tempfile.mkdtemp(prefix="full_workflow_test_")
+        export_dir = tempfile.mkdtemp(prefix="config_workflow_test_")
         self._panel._collect_all_data()
         record = self._panel._record
 
@@ -265,22 +218,76 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         # 6. Verify
         files = os.listdir(export_dir)
         print(f"Full workflow test export: {export_dir}")
-        for f in files:
-            print(f"  - {f}")
+        for fn in files:
+            print(f"  - {fn}")
 
         assert "annotation.json" in files, "Missing annotation.json"
         assert "rois.json" in files, "Missing rois.json"
         assert "scan_metadata.json" in files, "Missing scan_metadata.json"
 
-        # Verify annotation.json contents
         with open(annotation_path, "r") as f:
             data = json_mod.load(f)
-        assert len(data["class_labels"]) >= 2, "Expected at least 2 class labels"
+        assert data.get("label_config") is not None, "Expected label_config in export"
+        assert len(data["label_config"]["class_labels"]) == 2
+        assert len(data["label_config"]["roi_labels"]) == 4
+        assert len(data["label_config"]["segmentation_classes"]) == 4
+        assert "Normal" in data["class_labels"], "Expected 'Normal' in class_labels"
         assert len(data["rois"]) >= 2, "Expected at least 2 ROIs"
         assert data["scan"] is not None, "Expected scan metadata"
 
         slicer.util.infoDisplay(
             f"Full workflow test PASSED.\nExport dir: {export_dir}",
+            "Test Harness",
+        )
+
+    def _on_test_config_edit(self):
+        """Test re-editing configuration after annotation."""
+        from AnnotationModel import LabelDefinition, LabelConfig
+
+        # 1. Setup initial config with 2 class labels
+        config = LabelConfig(
+            class_labels=[
+                LabelDefinition(name="Normal", color="#4CAF50", description="No findings"),
+                LabelDefinition(name="Pathological", color="#f44336", description="Has findings"),
+            ],
+            roi_labels=[
+                LabelDefinition(name="Tumor", color="#e6194b", description="Tumor region"),
+            ],
+            segmentation_classes=[],
+        )
+        self._panel._on_config_confirmed(config)
+
+        # 2. Load scan
+        import SampleData
+        volume_node = SampleData.SampleDataLogic().downloadMRHead()
+        self._panel._on_scan_loaded(volume_node, "SampleData/MRHead.nrrd")
+
+        # 3. Select "Normal" class label
+        self._panel._class_label_tab.set_selected_labels(["Normal"])
+
+        # 4. Verify label is selected
+        selected = self._panel._class_label_tab.get_selected_labels()
+        assert "Normal" in selected, f"Expected 'Normal' in selected labels, got {selected}"
+
+        # 5. Re-configure: remove "Normal", keep "Pathological", add "Inconclusive"
+        new_config = LabelConfig(
+            class_labels=[
+                config.class_labels[1],  # Pathological (same id)
+                LabelDefinition(name="Inconclusive", color="#FF9800"),
+            ],
+            roi_labels=config.roi_labels,
+            segmentation_classes=[],
+        )
+        self._panel._on_config_confirmed(new_config)
+
+        # 6. Verify "Normal" was removed from record
+        assert "Normal" not in self._panel._record.class_labels, (
+            "Expected 'Normal' to be removed after config edit"
+        )
+
+        slicer.util.infoDisplay(
+            "Config edit test PASSED.\n"
+            "'Normal' was removed from annotations after being removed from config.",
             "Test Harness",
         )
 
