@@ -10,10 +10,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from AnnotationModel import (
     AnnotationRecord, ROIAnnotation, SegmentationData, SegmentLabel, ScanMetadata,
-    LabelDefinition, LabelConfig, ClassLabelAnnotation,
+    LabelDefinition, LabelConfig, ClassLabelAnnotation, PlaneSliceContext,
     SegmentSpatialExtent, SegmentModificationEvent,
+    should_record_segment_modification, VOLUME_SCOPED_EFFECTS,
 )
 from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export
+from SliceInfo import anatomical_slice_index_from_ijk
+
+
+class TestAnatomicalSliceIndex(unittest.TestCase):
+    def test_anatomical_slice_index_from_ijk(self):
+        self.assertEqual(anatomical_slice_index_from_ijk("Axial", [255, 255, 45]), 45)
+        self.assertEqual(anatomical_slice_index_from_ijk("Coronal", [128, 200, 50]), 200)
+        self.assertEqual(anatomical_slice_index_from_ijk("Sagittal", [88, 128, 30]), 88)
 
 
 class TestSliceViewMapping(unittest.TestCase):
@@ -57,7 +66,7 @@ class TestToDict(unittest.TestCase):
         record = AnnotationRecord()
         d = record.to_dict()
         expected_keys = {
-            "schema_version", "exported_at", "slicer_version", "summary",
+            "schema_version", "exported_at", "slicer_version",
             "id", "study_id", "series_id", "created_by", "created_at",
             "label_configuration", "series_metadata", "classification_labels",
             "regions_of_interest", "segmentation",
@@ -223,10 +232,80 @@ class TestClassLabels(unittest.TestCase):
         restored = AnnotationRecord.from_dict(record.to_dict())
         self.assertEqual(restored.class_labels[0].label, "A")
         self.assertEqual(restored.class_labels[0].slice_view, "Axial")
-        self.assertEqual(record.to_dict()["classification_labels"][0]["plane"], "Axial")
+        exported = record.to_dict()["classification_labels"][0]
+        self.assertNotIn("plane", exported)
+        self.assertEqual(exported["plane_slices"][0]["plane"], "Axial")
         self.assertEqual(restored.class_labels[0].slice_index, 42)
         self.assertEqual(restored.class_labels[1].label, "B")
         self.assertEqual(restored.class_labels[2].label, "C")
+
+    def test_class_label_all_planes_round_trip(self):
+        annotation = ClassLabelAnnotation(
+            label="Abnormal",
+            category_id="cat-1",
+            category_color="#f44336",
+            plane_slices=[
+                PlaneSliceContext(
+                    slice_view="Axial Plane",
+                    slice_index=41,
+                    slice_offset_mm=205.0,
+                    slice_position_ras=[-203.1, -203.1, 205.0],
+                    volume_slice_ijk=[255, 255, 41],
+                    slicer_slice_view="Red",
+                ),
+                PlaneSliceContext(
+                    slice_view="Coronal Plane",
+                    slice_index=200,
+                    slice_offset_mm=120.0,
+                    slice_position_ras=[-100.0, 120.0, 50.0],
+                    volume_slice_ijk=[128, 200, 50],
+                    slicer_slice_view="Green",
+                ),
+                PlaneSliceContext(
+                    slice_view="Sagittal Plane",
+                    slice_index=88,
+                    slice_offset_mm=88.0,
+                    slice_position_ras=[88.0, -50.0, 30.0],
+                    volume_slice_ijk=[88, 128, 30],
+                    slicer_slice_view="Yellow",
+                ),
+            ],
+        )
+        restored = ClassLabelAnnotation.from_dict(annotation.to_dict())
+        self.assertEqual(restored.label, "Abnormal")
+        self.assertEqual(len(restored.plane_slices), 3)
+        self.assertEqual(restored.get_plane_slice("Axial").slice_index, 41)
+        self.assertEqual(restored.get_plane_slice("Coronal").slice_index, 200)
+        self.assertEqual(restored.get_plane_slice("Sagittal").slice_index, 88)
+        exported = restored.to_dict()
+        self.assertEqual(len(exported["plane_slices"]), 3)
+        self.assertEqual(exported["plane_slices"][0]["slice_view"], "Axial Plane")
+        self.assertEqual(exported["plane_slices"][0]["slice_index"], 41)
+        self.assertEqual(exported["plane_slices"][0]["slice_offset_mm"], 205.0)
+        self.assertEqual(exported["plane_slices"][0]["voxel_index_ijk"], [255, 255, 41])
+        self.assertNotIn("slice_position_ras", exported["plane_slices"][0])
+        self.assertNotIn("volume_slice_ijk", exported["plane_slices"][0])
+        for key in (
+            "plane", "slicer_slice_view", "slice_number", "slice_index",
+            "slice_offset_mm", "slice_view", "position_ras", "voxel_index_ijk",
+            "slice_to_ras_matrix", "field_of_view", "slice_spacing",
+            "slice_normal_ras", "volume_node_id", "volume_name",
+        ):
+            self.assertNotIn(key, exported, f"root-level {key} should not be exported")
+
+    def test_legacy_physical_slice_index_resolves_to_anatomical(self):
+        legacy = {
+            "plane": "Axial",
+            "slice_view": "Axial Plane",
+            "slice_number": 225,
+            "slice_index": 225,
+            "position_ras": [-203.1, -203.1, 225.0],
+            "voxel_index_ijk": [255, 255, 45],
+            "slicer_slice_view": "Red",
+        }
+        restored = PlaneSliceContext.from_dict(legacy)
+        self.assertEqual(restored.slice_index, 45)
+        self.assertEqual(restored.volume_slice_ijk, [255, 255, 45])
 
     def test_legacy_string_class_labels_load(self):
         record = AnnotationRecord.from_dict({"class_labels": ["Normal", "Artifact"]})
@@ -247,6 +326,49 @@ class TestROIAnnotation(unittest.TestCase):
         roi = ROIAnnotation(mrml_node_id="vtkMRMLMarkupsLineNode1")
         d = roi.to_dict()
         self.assertEqual(d["mrml_node_id"], "vtkMRMLMarkupsLineNode1")
+
+    def test_rectangle_2d_geometry_type_export(self):
+        self.assertEqual(roi_geometry_type_export("rectangle_2d"), "Bounding Box 2D")
+
+    def test_rectangle_2d_round_trip(self):
+        roi = ROIAnnotation(
+            roi_type="rectangle_2d",
+            label="Lesion",
+            color="#e6194b",
+            slice_view="Red",
+            slice_index=42,
+            control_points=[
+                {"x": 0.0, "y": 0.0, "z": 5.0},
+                {"x": 10.0, "y": 0.0, "z": 5.0},
+                {"x": 10.0, "y": 8.0, "z": 5.0},
+                {"x": 0.0, "y": 8.0, "z": 5.0},
+            ],
+            bounding_box_dimensions=[10.0, 8.0, 0.0],
+            radii=[5.0, 4.0, 0.0],
+        )
+        restored = ROIAnnotation.from_dict(roi.to_dict())
+        self.assertEqual(restored.roi_type, "rectangle_2d")
+        self.assertEqual(restored.geometry_type if hasattr(restored, "geometry_type") else roi_geometry_type_export(restored.roi_type), "Bounding Box 2D")
+        self.assertEqual(len(restored.control_points), 4)
+        self.assertEqual(restored.bounding_box_dimensions, [10.0, 8.0, 0.0])
+
+    def test_roi_export_uses_anatomical_slice_and_physical_offset(self):
+        roi = ROIAnnotation(
+            roi_type="ellipse",
+            label="Lesion",
+            slice_view="Axial",
+            slice_index=45,
+            slice_offset_mm=225.0,
+            slice_position_ras=[-203.1, -203.1, 225.0],
+            volume_slice_ijk=[255, 255, 45],
+        )
+        exported = roi.to_dict()
+        self.assertEqual(exported["slice_index"], 45)
+        self.assertEqual(exported["slice_offset_mm"], 225.0)
+        for key in ("slice_number", "roi_type", "label", "slice_view", "control_points"):
+            self.assertNotIn(key, exported, f"redundant legacy key {key} should not be exported")
+        self.assertNotIn("voxel_index_ijk", exported)
+        self.assertNotIn("volume_slice_ijk", exported)
 
     def test_from_dict_round_trip(self):
         roi = ROIAnnotation(
@@ -292,9 +414,21 @@ class TestSegmentSpatialMetadata(unittest.TestCase):
             segment_id="Lesion",
             segment_name="Lesion",
             effect_parameters={"MinimumThreshold": -100, "MaximumThreshold": 200},
-            slice_context={"plane": "Axial", "slice_number": 42},
+            slice_context={
+                "plane": "Axial",
+                "slice_number": 42,
+                "position_ras": [1.0, 2.0, 3.0],
+                "voxel_index_ijk": [10, 20, 42],
+                "slicer_slice_view": "Red",
+            },
         )
-        restored = SegmentModificationEvent.from_dict(event.to_dict())
+        exported = event.to_dict()
+        self.assertEqual(exported["effect_name"], "Threshold")
+        self.assertEqual(exported["effect_parameters"]["MaximumThreshold"], 200)
+        self.assertEqual(exported["slice_context"]["plane"], "Axial")
+        self.assertEqual(exported["slice_context"]["slice_number"], 42)
+
+        restored = SegmentModificationEvent.from_dict(exported)
         self.assertEqual(restored.effect_name, "Threshold")
         self.assertEqual(restored.effect_parameters["MaximumThreshold"], 200)
 
@@ -313,6 +447,66 @@ class TestSegmentSpatialMetadata(unittest.TestCase):
         self.assertIn("spatial_extent", exported)
         self.assertEqual(len(exported["modification_events"]), 1)
         self.assertEqual(exported["last_effect_name"], "Paint")
+
+
+class TestSegmentModificationRecording(unittest.TestCase):
+    def test_plane_local_effect_only_records_selected_segment_with_voxel_change(self):
+        self.assertTrue(
+            should_record_segment_modification(
+                "Paint", "Infarct", "Infarct", 10, 0, 100, 50
+            )
+        )
+        self.assertFalse(
+            should_record_segment_modification(
+                "Paint", "Spleen", "Infarct", 0, 0, 200, 100
+            )
+        )
+        self.assertFalse(
+            should_record_segment_modification(
+                "Level tracing", "Infarct", "Infarct", 5, 5, 200, 100
+            )
+        )
+
+    def test_volume_scoped_effect_ignores_empty_spurious_mtime(self):
+        self.assertFalse(
+            should_record_segment_modification(
+                "Smoothing", "Spleen", "Infarct", 0, 0, 200, 100
+            )
+        )
+        self.assertTrue(
+            should_record_segment_modification(
+                "Smoothing", "Infarct", "Infarct", 100, 120, 200, 100
+            )
+        )
+
+
+    def test_segmentation_export_is_compact(self):
+        seg = SegmentationData(
+            labels=[
+                SegmentLabel(
+                    name="Infarct",
+                    segment_id="Infarct",
+                    modification_events=[
+                        SegmentModificationEvent(
+                            effect_name="Paint",
+                            segment_id="Infarct",
+                            slice_context={"plane": "Sagittal", "slice_number": 88, "slicer_slice_view": "Yellow"},
+                        )
+                    ],
+                )
+            ],
+            total_voxel_count=10,
+            per_label_voxel_counts={"Infarct": 10},
+        )
+        exported = seg.to_dict()
+        self.assertIn("segments", exported)
+        self.assertNotIn("labels", exported)
+        self.assertNotIn("modification_events", exported)
+        self.assertNotIn("total_voxel_count", exported)
+        event = exported["segments"][0]["modification_events"][0]
+        self.assertNotIn("plane", event)
+        self.assertEqual(event["slice_context"]["plane"], "Sagittal")
+        self.assertNotIn("slice_view", event["slice_context"])
 
 
 class TestSegmentLabel(unittest.TestCase):
