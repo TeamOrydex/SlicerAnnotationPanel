@@ -1,28 +1,64 @@
 {
-    "classification_labels": [
-      {
-        "name": "Normal",
-        "color": "#4CAF50",
-        "description": "No abnormality identified"
-      },
-      {
-        "name": "Abnormal",
-        "color": "#f44336",
-        "description": "Abnormality present"
-      }
-    ],
-    "roi_categories": [
-      {
-        "name": "Lesion",
-        "color": "#e6194b",
-        "description": "Focal lesion region"
-      }
-    ],
-    "segment_labels": [
-      {
-        "name": "Lesion",
-        "color": "#e6194b",
-        "description": "Lesion segmentation"
-      }
-    ]
-  }
+  "preset_name": "Spleen CT Annotation",
+  "classification_labels": [
+    {
+      "name": "Normal",
+      "color": "#4CAF50",
+      "description": "Normal spleen size and appearance"
+    },
+    {
+      "name": "Enlarged",
+      "color": "#FF9800",
+      "description": "Splenomegaly"
+    },
+    {
+      "name": "Abnormal",
+      "color": "#f44336",
+      "description": "Focal or diffuse abnormality"
+    }
+  ],
+  "roi_categories": [
+    {
+      "name": "Spleen",
+      "color": "#8B4513",
+      "description": "Spleen boundary region"
+    },
+    {
+      "name": "Lesion",
+      "color": "#e6194b",
+      "description": "Focal splenic lesion"
+    },
+    {
+      "name": "Infarct",
+      "color": "#911eb4",
+      "description": "Splenic infarct"
+    },
+    {
+      "name": "Accessory Spleen",
+      "color": "#4363d8",
+      "description": "Accessory splenic tissue"
+    },
+    {
+      "name": "Artifact",
+      "color": "#808080",
+      "description": "Imaging artifact"
+    }
+  ],
+  "segment_labels": [
+    {
+      "name": "Spleen",
+      "color": "#8B4513",
+      "description": "Spleen parenchyma"
+    },
+    {
+      "name": "Lesion",
+      "color": "#e6194b",
+      "description": "Focal lesion segmentation"
+    },
+    {
+      "name": "Infarct",
+      "color": "#911eb4",
+      "description": "Infarcted tissue"
+    }
+  ]
+}
