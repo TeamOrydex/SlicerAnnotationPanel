@@ -207,25 +207,13 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         with open(annotation_path, "w") as f:
             f.write(record.to_json())
 
-        if record.rois:
-            rois_path = os.path.join(export_dir, "rois.json")
-            with open(rois_path, "w") as f:
-                json_mod.dump([roi.to_dict() for roi in record.rois], f, indent=2)
-
-        if record.scan:
-            scan_path = os.path.join(export_dir, "scan_metadata.json")
-            with open(scan_path, "w") as f:
-                json_mod.dump(record.scan.to_dict(), f, indent=2)
-
         # 6. Verify
         files = os.listdir(export_dir)
         print(f"Full workflow test export: {export_dir}")
         for fn in files:
             print(f"  - {fn}")
 
-        assert "annotation.json" in files, "Missing annotation.json"
-        assert "rois.json" in files, "Missing rois.json"
-        assert "scan_metadata.json" in files, "Missing scan_metadata.json"
+        assert files == ["annotation.json"], f"Expected only annotation.json, got: {files}"
 
         with open(annotation_path, "r") as f:
             data = json_mod.load(f)

@@ -649,36 +649,19 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         exported_files = []
 
-        # annotation.json
         annotation_path = os.path.join(export_dir, "annotation.json")
-        with open(annotation_path, "w") as f:
-            f.write(self._record.to_json())
-        exported_files.append("annotation.json")
 
-        # regions_of_interest.json
-        if has_rois:
-            rois_path = os.path.join(export_dir, "regions_of_interest.json")
-            rois_data = [roi.to_dict() for roi in self._record.rois]
-            with open(rois_path, "w") as f:
-                json.dump(rois_data, f, indent=2)
-            exported_files.append("regions_of_interest.json")
-
-        # segmentation.nrrd
+        # segmentation.nrrd (optional voxel mask alongside annotation.json)
         if has_seg:
             seg_path = os.path.join(export_dir, "segmentation.nrrd")
             success = self._segmentation_tab.export_mask_to_file(seg_path, "nrrd")
             if success:
                 self._record.segmentation.export_filepath = seg_path
                 exported_files.append("segmentation.nrrd")
-                with open(annotation_path, "w") as f:
-                    f.write(self._record.to_json())
 
-        # series_metadata.json
-        if self._record.scan:
-            series_path = os.path.join(export_dir, "series_metadata.json")
-            with open(series_path, "w") as f:
-                json.dump(self._record.scan.to_dict(), f, indent=2)
-            exported_files.append("series_metadata.json")
+        with open(annotation_path, "w") as f:
+            f.write(self._record.to_json())
+        exported_files.insert(0, "annotation.json")
 
         qt.QMessageBox.information(
             self, "Export Complete",
