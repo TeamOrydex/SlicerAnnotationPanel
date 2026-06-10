@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Maps ROI type names to their Slicer MRML node class names.
 # Checked at runtime; unavailable types get their button disabled.
 MARKUP_NODE_CLASSES = {
+    "rectangle_2d": "vtkMRMLMarkupsPlaneNode",
     "rectangle_3d": "vtkMRMLMarkupsROINode",
     "rectangle": "vtkMRMLMarkupsROINode",  # backward compat
     "polygon": "vtkMRMLMarkupsClosedCurveNode",
@@ -24,6 +25,7 @@ MARKUP_NODE_CLASSES = {
     "line": "vtkMRMLMarkupsLineNode",
 }
 
+PLANE_RECTANGLE_TOOL_IDS = ("rectangle_2d",)
 RECTANGLE_TOOL_IDS = ("rectangle_3d", "rectangle")
 
 EXTENDABLE_ROI_TYPES = frozenset({"polygon", "freehand_curve", "line"})
@@ -95,6 +97,7 @@ class ROITab(qt.QWidget):
 
         self._tool_buttons = {}
         tool_names = [
+            ("rectangle_2d", "Bounding Box 2D"),
             ("rectangle_3d", "Bounding Box"),
             ("polygon", "Polygon Contour"),
             ("freehand_curve", "Freehand Contour"),
@@ -241,6 +244,261 @@ class ROITab(qt.QWidget):
         except Exception as e:
             logger.warning(f"Could not configure ROI box type: {e}")
 
+    def _configure_plane_node(self, node):
+        """Use Slicer Markups defaults for slice-aligned plane rectangles."""
+        try:
+            if hasattr(node, "SetNormalPointRequired"):
+                node.SetNormalPointRequired(False)
+        except Exception as e:
+            logger.warning(f"Could not configure plane markup node: {e}")
+
+    def _enter_plane_placement(self, node):
+        """Enter placement mode the same way the Markups module does for planes."""
+        selection_node = slicer.app.applicationLogic().GetSelectionNode()
+        interaction_node = slicer.app.applicationLogic().GetInteractionNode()
+        try:
+            slicer.modules.markups.logic().SetActiveList(node)
+        except Exception:
+            selection_node.SetReferenceActivePlaceNodeClassName("vtkMRMLMarkupsPlaneNode")
+            selection_node.SetActivePlaceNodeID(node.GetID())
+        interaction_node.SetPlaceModePersistence(False)
+        interaction_node.SetCurrentInteractionMode(interaction_node.Place)
+        return interaction_node
+
+    def _sync_plane_geometry(self, node):
+        """Refresh plane rectangle geometry from its control points."""
+        for method_name in ("UpdatePlaneFromControlPoints", "UpdatePlaneSize"):
+            try:
+                method = getattr(node, method_name, None)
+                if callable(method):
+                    method()
+            except Exception:
+                pass
+
+    def _get_defined_control_point_count(self, node):
+        """Return how many plane control points have been placed."""
+        try:
+            if hasattr(node, "GetNumberOfDefinedControlPoints"):
+                return int(node.GetNumberOfDefinedControlPoints())
+        except Exception:
+            pass
+        try:
+            return int(node.GetNumberOfControlPoints())
+        except Exception:
+            return 0
+
+    def _control_point_distance(self, node, index_a, index_b):
+        """Euclidean distance between two markup control points."""
+        pos_a = [0.0, 0.0, 0.0]
+        pos_b = [0.0, 0.0, 0.0]
+        if hasattr(node, "GetNthControlPointPositionWorld"):
+            node.GetNthControlPointPositionWorld(index_a, pos_a)
+            node.GetNthControlPointPositionWorld(index_b, pos_b)
+        else:
+            node.GetNthControlPointPosition(index_a, pos_a)
+            node.GetNthControlPointPosition(index_b, pos_b)
+        return (
+            (pos_a[0] - pos_b[0]) ** 2
+            + (pos_a[1] - pos_b[1]) ** 2
+            + (pos_a[2] - pos_b[2]) ** 2
+        ) ** 0.5
+
+    def _has_plane_size(self, node):
+        """True if the plane rectangle has a non-degenerate extent."""
+        self._sync_plane_geometry(node)
+        try:
+            if hasattr(node, "GetIsPlaneValid") and bool(node.GetIsPlaneValid()):
+                return True
+        except Exception:
+            pass
+        defined = self._get_defined_control_point_count(node)
+        if defined >= 2 and self._control_point_distance(node, 0, 1) > 1e-3:
+            return True
+        for method_name in ("GetSizeWorld", "GetSize"):
+            try:
+                method = getattr(node, method_name, None)
+                if not callable(method):
+                    continue
+                size = [0.0, 0.0]
+                method(size)
+                if float(size[0]) > 1e-3 and float(size[1]) > 1e-3:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _plane_placement_complete(self, node):
+        """True once Slicer has finished a Markups-style plane placement."""
+        try:
+            if hasattr(node, "GetControlPointPlacementComplete"):
+                if bool(node.GetControlPointPlacementComplete()):
+                    return self._has_plane_size(node)
+        except Exception:
+            pass
+        return (
+            self._get_defined_control_point_count(node) >= 1
+            and self._has_plane_size(node)
+        )
+
+    def _finish_plane_rectangle(self, node, tool_id):
+        """Finalize a completed plane rectangle and exit placement mode."""
+        if node is None:
+            return
+        self._remove_node_observers(node.GetID())
+        self._active_tool = None
+        self._placement_node = None
+        self._remove_interaction_observer()
+        try:
+            interaction_node = slicer.app.applicationLogic().GetInteractionNode()
+            interaction_node.SetCurrentInteractionMode(interaction_node.ViewTransform)
+        except Exception:
+            pass
+        self._schedule_plane_finalize(node, tool_id)
+        self._uncheck_all_tools()
+
+    def _cancel_plane_rectangle(self, node=None):
+        """Discard an in-progress plane rectangle and exit placement mode."""
+        if node:
+            self._remove_node_observers(node.GetID())
+        self._active_tool = None
+        self._placement_node = None
+        self._remove_interaction_observer()
+        try:
+            interaction_node = slicer.app.applicationLogic().GetInteractionNode()
+            interaction_node.SetCurrentInteractionMode(interaction_node.ViewTransform)
+        except Exception:
+            pass
+        if node:
+            try:
+                slicer.mrmlScene.RemoveNode(node)
+            except Exception:
+                pass
+        self._uncheck_all_tools()
+
+    def _extract_plane_corner_points(self, node):
+        """Return plane rectangle corners as [{x,y,z}, ...] in RAS."""
+        import vtk
+
+        self._sync_plane_geometry(node)
+        points = []
+        if hasattr(node, "GetPlaneCornerPoints"):
+            try:
+                corner_points = vtk.vtkPoints()
+                node.GetPlaneCornerPoints(corner_points)
+                for i in range(corner_points.GetNumberOfPoints()):
+                    pt = [0.0, 0.0, 0.0]
+                    corner_points.GetPoint(i, pt)
+                    points.append({"x": pt[0], "y": pt[1], "z": pt[2]})
+            except Exception:
+                points = []
+
+        if not points and hasattr(node, "GetPlaneBounds") and hasattr(node, "GetPlaneToWorldMatrix"):
+            try:
+                bounds = [0.0, 0.0, 0.0, 0.0]
+                node.GetPlaneBounds(bounds)
+                matrix = vtk.vtkMatrix4x4()
+                node.GetPlaneToWorldMatrix(matrix)
+                for lx, ly in (
+                    (bounds[0], bounds[2]),
+                    (bounds[1], bounds[2]),
+                    (bounds[1], bounds[3]),
+                    (bounds[0], bounds[3]),
+                ):
+                    world = matrix.MultiplyPoint([lx, ly, 0.0, 1.0])
+                    points.append({"x": world[0], "y": world[1], "z": world[2]})
+            except Exception:
+                points = []
+
+        if not points:
+            for i in range(node.GetNumberOfControlPoints()):
+                pos = [0.0, 0.0, 0.0]
+                node.GetNthControlPointPosition(i, pos)
+                points.append({"x": pos[0], "y": pos[1], "z": pos[2]})
+        return points
+
+    def _apply_plane_geometry_metadata(self, roi, node):
+        """Populate ROI fields from a vtkMRMLMarkupsPlaneNode."""
+        import vtk
+
+        roi.mrml_node_name = node.GetName() if node else ""
+        roi.control_points = self._extract_plane_corner_points(node)
+        roi.number_of_control_points = len(roi.control_points)
+
+        if hasattr(node, "GetSize"):
+            try:
+                size = [0.0, 0.0]
+                node.GetSize(size)
+                roi.bounding_box_dimensions = [float(size[0]), float(size[1]), 0.0]
+                roi.radii = [float(size[0]) / 2.0, float(size[1]) / 2.0, 0.0]
+            except Exception:
+                pass
+
+        if hasattr(node, "GetCenter"):
+            try:
+                center = [0.0, 0.0, 0.0]
+                node.GetCenter(center)
+                roi.center_ras = list(center)
+                if self._volume_node:
+                    roi.center_voxel_ijk = ras_to_voxel_ijk(self._volume_node, roi.center_ras)
+            except Exception:
+                pass
+        elif roi.control_points:
+            xs = [pt["x"] for pt in roi.control_points]
+            ys = [pt["y"] for pt in roi.control_points]
+            zs = [pt["z"] for pt in roi.control_points]
+            roi.center_ras = [
+                sum(xs) / len(xs),
+                sum(ys) / len(ys),
+                sum(zs) / len(zs),
+            ]
+            if self._volume_node:
+                roi.center_voxel_ijk = ras_to_voxel_ijk(self._volume_node, roi.center_ras)
+
+        if hasattr(node, "GetPlaneToWorldMatrix"):
+            try:
+                matrix = vtk.vtkMatrix4x4()
+                node.GetPlaneToWorldMatrix(matrix)
+                roi.orientation = [
+                    matrix.GetElement(row, col) for row in range(3) for col in range(3)
+                ]
+            except Exception:
+                pass
+
+    def _schedule_plane_finalize(self, node, tool_id):
+        """Defer planar rectangle finalization until plane geometry is ready."""
+        if node is None:
+            return
+        node_id = node.GetID()
+        if node_id in self._rectangle_finalize_scheduled:
+            return
+        self._rectangle_finalize_scheduled.add(node_id)
+
+        def cleanup():
+            self._rectangle_finalize_scheduled.discard(node_id)
+
+        def attempt(retry=0):
+            n = slicer.mrmlScene.GetNodeByID(node_id)
+            if not n:
+                cleanup()
+                return
+
+            if not self._has_plane_size(n):
+                if retry < 30:
+                    qt.QTimer.singleShot(100, lambda r=retry + 1: attempt(r))
+                    return
+                logger.warning("Discarding incomplete plane rectangle ROI")
+                try:
+                    slicer.mrmlScene.RemoveNode(n)
+                except Exception:
+                    pass
+                cleanup()
+                return
+
+            self._finalize_roi(n, tool_id)
+            cleanup()
+
+        qt.QTimer.singleShot(50, lambda: attempt(0))
+
     def _sync_roi_geometry(self, node, tool_id=None):
         """Ask a 3D ROI node to refresh geometry from its internal state."""
         if hasattr(node, "UpdateBoxROIFromControlPoints"):
@@ -367,6 +625,8 @@ class ROITab(qt.QWidget):
 
         if tool_id in RECTANGLE_TOOL_IDS:
             self._configure_roi_node(node)
+        elif tool_id in PLANE_RECTANGLE_TOOL_IDS:
+            self._configure_plane_node(node)
 
         # Set color on display node
         display_node = node.GetDisplayNode()
@@ -378,24 +638,30 @@ class ROITab(qt.QWidget):
 
         self._placement_node = node
 
-        # Line tool finalizes via point observer; rectangles finalize when placement ends.
-        if tool_id not in RECTANGLE_TOOL_IDS:
+        if tool_id == "line":
             self._add_node_observer(
                 node,
                 slicer.vtkMRMLMarkupsNode.PointPositionDefinedEvent,
                 self._on_point_placed,
             )
+        elif tool_id in PLANE_RECTANGLE_TOOL_IDS:
+            self._add_node_observer(
+                node,
+                slicer.vtkMRMLMarkupsNode.PointPositionDefinedEvent,
+                self._on_plane_point_placed,
+            )
 
-        # Enter placement mode
-        selection_node = slicer.app.applicationLogic().GetSelectionNode()
-        selection_node.SetActivePlaceNodeID(node.GetID())
-        interaction_node = slicer.app.applicationLogic().GetInteractionNode()
-        interaction_node.SetCurrentInteractionMode(interaction_node.Place)
-        # Rectangle / line: Slicer completes after required clicks
-        if tool_id in RECTANGLE_TOOL_IDS or tool_id == "line":
-            interaction_node.SetPlaceModePersistence(False)
+        if tool_id in PLANE_RECTANGLE_TOOL_IDS:
+            interaction_node = self._enter_plane_placement(node)
         else:
-            interaction_node.SetPlaceModePersistence(True)
+            selection_node = slicer.app.applicationLogic().GetSelectionNode()
+            selection_node.SetActivePlaceNodeID(node.GetID())
+            interaction_node = slicer.app.applicationLogic().GetInteractionNode()
+            interaction_node.SetCurrentInteractionMode(interaction_node.Place)
+            if tool_id in RECTANGLE_TOOL_IDS or tool_id == "line":
+                interaction_node.SetPlaceModePersistence(False)
+            else:
+                interaction_node.SetPlaceModePersistence(True)
 
         # Observe interaction node: when user right-clicks, Slicer exits
         # placement mode — we detect this and finalize the shape.
@@ -462,6 +728,13 @@ class ROITab(qt.QWidget):
                 self._uncheck_all_tools()
             return
 
+        if active in PLANE_RECTANGLE_TOOL_IDS:
+            if self._plane_placement_complete(node):
+                self._finish_plane_rectangle(node, active)
+            else:
+                self._cancel_plane_rectangle(node)
+            return
+
         self._active_tool = None
         self._placement_node = None
 
@@ -489,7 +762,7 @@ class ROITab(qt.QWidget):
         if not self._placement_node:
             return
 
-        # Rectangle: finalize only when the box is complete
+        # 3D box: finalize only when the box is complete
         if active in RECTANGLE_TOOL_IDS:
             node = self._placement_node
             self._placement_node = None
@@ -500,6 +773,14 @@ class ROITab(qt.QWidget):
                     slicer.mrmlScene.RemoveNode(node)
                 except Exception:
                     pass
+            return
+
+        if active in PLANE_RECTANGLE_TOOL_IDS:
+            node = self._placement_node
+            if self._plane_placement_complete(node):
+                self._finish_plane_rectangle(node, active)
+            else:
+                self._cancel_plane_rectangle(node)
             return
 
         # Ellipse/Polygon/freehand: finalize if enough points exist
@@ -550,6 +831,22 @@ class ROITab(qt.QWidget):
             self._deactivate_tool()
             self._uncheck_all_tools()
 
+    def _on_plane_point_placed(self, caller, event):
+        """Finalize a plane rectangle once Slicer finishes building the plane."""
+        if caller is None or self._active_tool not in PLANE_RECTANGLE_TOOL_IDS:
+            return
+        if caller is not self._placement_node:
+            return
+
+        def attempt(retry=0):
+            if caller is not self._placement_node or not self._active_tool:
+                return
+            if self._plane_placement_complete(caller):
+                self._finish_plane_rectangle(caller, self._active_tool)
+            elif retry < 20:
+                qt.QTimer.singleShot(50, lambda r=retry + 1: attempt(r))
+
+        qt.QTimer.singleShot(0, lambda: attempt(0))
 
     def _guess_tool_type(self, node):
         """Infer tool type from the node class."""
@@ -560,6 +857,8 @@ class ROITab(qt.QWidget):
             return "freehand_curve"
         elif "Line" in class_name:
             return "line"
+        elif "Plane" in class_name:
+            return "rectangle_2d"
         elif "ROI" in class_name:
             return "rectangle_3d"
         return "unknown"
@@ -787,6 +1086,7 @@ class ROITab(qt.QWidget):
     def _apply_slice_context(self, roi, slice_info):
         roi.slice_view = slice_info.get("plane", slice_info.get("slice_view", ""))
         roi.slice_index = slice_info.get("slice_number", slice_info.get("slice_index", 0))
+        roi.slice_offset_mm = float(slice_info.get("slice_offset_mm", 0) or 0)
         roi.slice_position_ras = list(
             slice_info.get("position_ras", slice_info.get("slice_position_ras", []))
         )
@@ -834,45 +1134,48 @@ class ROITab(qt.QWidget):
         self._apply_slice_context(roi, slice_info)
         self._apply_category_metadata(roi)
 
-        # Extract control points
-        points = []
-        for i in range(node.GetNumberOfControlPoints()):
-            pos = [0.0, 0.0, 0.0]
-            node.GetNthControlPointPosition(i, pos)
-            points.append({"x": pos[0], "y": pos[1], "z": pos[2]})
-        if not points and hasattr(node, "GetXYZ"):
-            try:
-                center = [0.0, 0.0, 0.0]
-                node.GetXYZ(center)
-                points.append({"x": center[0], "y": center[1], "z": center[2]})
-            except Exception:
-                pass
-        roi.control_points = points
+        if tool_id in PLANE_RECTANGLE_TOOL_IDS:
+            self._apply_plane_geometry_metadata(roi, node)
+        else:
+            # Extract control points
+            points = []
+            for i in range(node.GetNumberOfControlPoints()):
+                pos = [0.0, 0.0, 0.0]
+                node.GetNthControlPointPosition(i, pos)
+                points.append({"x": pos[0], "y": pos[1], "z": pos[2]})
+            if not points and hasattr(node, "GetXYZ"):
+                try:
+                    center = [0.0, 0.0, 0.0]
+                    node.GetXYZ(center)
+                    points.append({"x": center[0], "y": center[1], "z": center[2]})
+                except Exception:
+                    pass
+            roi.control_points = points
 
-        # Extract size/radii for ROI nodes
-        if hasattr(node, "GetSize"):
-            try:
-                size = [0.0, 0.0, 0.0]
-                node.GetSize(size)
-                roi.radii = [size[0] / 2.0, size[1] / 2.0, size[2] / 2.0]
-            except Exception:
-                pass
+            # Extract size/radii for 3D ROI nodes
+            if hasattr(node, "GetSize"):
+                try:
+                    size = [0.0, 0.0, 0.0]
+                    node.GetSize(size)
+                    roi.radii = [size[0] / 2.0, size[1] / 2.0, size[2] / 2.0]
+                except Exception:
+                    pass
 
-        # Extract orientation for ROI nodes
-        if hasattr(node, "GetObjectToWorldMatrix"):
-            try:
-                import vtk
-                matrix = vtk.vtkMatrix4x4()
-                node.GetObjectToWorldMatrix(matrix)
-                orientation = []
-                for row in range(3):
-                    for col in range(3):
-                        orientation.append(matrix.GetElement(row, col))
-                roi.orientation = orientation
-            except Exception:
-                pass
+            # Extract orientation for 3D ROI nodes
+            if hasattr(node, "GetObjectToWorldMatrix"):
+                try:
+                    import vtk
+                    matrix = vtk.vtkMatrix4x4()
+                    node.GetObjectToWorldMatrix(matrix)
+                    orientation = []
+                    for row in range(3):
+                        for col in range(3):
+                            orientation.append(matrix.GetElement(row, col))
+                    roi.orientation = orientation
+                except Exception:
+                    pass
 
-        self._apply_geometry_metadata(roi, node)
+            self._apply_geometry_metadata(roi, node)
         display_node = node.GetDisplayNode()
         if display_node:
             r, g, b = hex_to_rgb_float(roi.color)
@@ -1058,18 +1361,13 @@ class ROITab(qt.QWidget):
         return get_active_slice_view()
 
     def _get_current_slice_index(self, slice_name=None):
-        """Get the current slice offset index from a slice widget."""
-        info = capture_slice_info(self._volume_node)
+        """Get the current anatomical slice index from a slice widget."""
         if slice_name:
             slicer_name = plane_to_slice_view(slice_name)
-            if slicer_name != get_active_slice_view():
-                try:
-                    layout_manager = slicer.app.layoutManager()
-                    slice_widget = layout_manager.sliceWidget(slicer_name)
-                    if slice_widget:
-                        return int(round(float(slice_widget.sliceLogic().GetSliceOffset())))
-                except Exception:
-                    pass
+            from SliceInfo import capture_slice_info_for_view
+            info = capture_slice_info_for_view(slicer_name, self._volume_node)
+            return info.get("slice_index", 0)
+        info = capture_slice_info(self._volume_node)
         return info.get("slice_index", 0)
 
     def _uncheck_all_tools(self):
@@ -1250,7 +1548,7 @@ class ROITab(qt.QWidget):
     def _create_node_from_roi(self, roi):
         """Create a Slicer markup node from an ROIAnnotation (for loading saved data)."""
         roi_type = roi.roi_type
-        if roi_type in ("rectangle_2d", "rectangle"):
+        if roi_type == "rectangle":
             roi_type = "rectangle_3d"
 
         class_name = MARKUP_NODE_CLASSES.get(roi_type)
@@ -1263,7 +1561,14 @@ class ROITab(qt.QWidget):
             class_name = "vtkMRMLMarkupsClosedCurveNode"
 
         # Legacy planar saves may be closed curves with four corners
-        if roi.roi_type == "rectangle_2d" and len(roi.control_points) == 4 and not roi.radii:
+        if (
+            roi.roi_type == "rectangle_2d"
+            and class_name == "vtkMRMLMarkupsPlaneNode"
+            and len(roi.control_points) == 4
+            and not roi.radii
+            and not roi.bounding_box_dimensions
+            and not roi.orientation
+        ):
             class_name = "vtkMRMLMarkupsClosedCurveNode"
 
         if not class_name:
@@ -1283,12 +1588,41 @@ class ROITab(qt.QWidget):
 
         if class_name == "vtkMRMLMarkupsROINode":
             self._configure_roi_node(node)
+        elif class_name == "vtkMRMLMarkupsPlaneNode":
+            self._configure_plane_node(node)
 
-        for pt in roi.control_points:
-            node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
+        if class_name == "vtkMRMLMarkupsPlaneNode":
+            if roi.center_ras and len(roi.center_ras) == 3 and hasattr(node, "SetCenter"):
+                try:
+                    node.SetCenter(roi.center_ras[0], roi.center_ras[1], roi.center_ras[2])
+                except Exception:
+                    pass
+            placement_points = roi.control_points[:1] if roi.center_ras else roi.control_points[:3]
+            for pt in placement_points:
+                node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
+        else:
+            for pt in roi.control_points:
+                node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
 
         if class_name == "vtkMRMLMarkupsCurveNode" and roi_type == "line":
             self._set_curve_linear(node)
+
+        if class_name == "vtkMRMLMarkupsPlaneNode":
+            self._sync_plane_geometry(node)
+            if roi.bounding_box_dimensions and hasattr(node, "SetSize"):
+                try:
+                    node.SetSize(
+                        float(roi.bounding_box_dimensions[0]),
+                        float(roi.bounding_box_dimensions[1]),
+                    )
+                except Exception:
+                    pass
+            elif roi.radii and hasattr(node, "SetSize"):
+                try:
+                    node.SetSize(float(roi.radii[0]) * 2.0, float(roi.radii[1]) * 2.0)
+                except Exception:
+                    pass
+            self._sync_plane_geometry(node)
 
         if class_name == "vtkMRMLMarkupsROINode" and roi.radii and hasattr(node, "SetSize"):
             try:
