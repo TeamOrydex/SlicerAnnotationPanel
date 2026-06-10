@@ -3,7 +3,6 @@ Segmentation tab: pixel-level painting using Slicer's Segment Editor.
 Embeds qMRMLSegmentEditorWidget with export controls and opacity adjustment.
 The source volume and segment classes are set externally by the panel.
 """
-import time
 import qt
 import slicer
 import logging
@@ -13,10 +12,39 @@ from AnnotationModel import (
     SegmentLabel,
     SegmentSpatialExtent,
     SegmentModificationEvent,
+    PlaneSliceContext,
+    VOLUME_SCOPED_EFFECTS,
+    should_record_segment_modification,
 )
-from SliceInfo import capture_slice_info
+from SliceInfo import (
+    capture_slice_info,
+    capture_slice_info_for_view,
+    capture_slice_context_at_cursor,
+    get_active_slice_view,
+    install_slice_tracking,
+    remember_slice_view_interaction,
+    set_active_slice_view,
+)
 
 logger = logging.getLogger(__name__)
+
+# Effect names must match Slicer's qMRMLSegmentEditorWidget defaults exactly.
+SEGMENT_EDITOR_EFFECT_ORDER = [
+    "Threshold",
+    "Paint",
+    "Draw",
+    "Erase",
+    "Level tracing",
+    "Grow from seeds",
+    "Fill between slices",
+    "Margin",
+    "Hollow",
+    "Smoothing",
+    "Scissors",
+    "Islands",
+    "Logical operators",
+    "Mask volume",
+]
 
 # Fallback parameter names when MRML attribute enumeration is unavailable.
 EFFECT_KNOWN_PARAMS = {
@@ -40,6 +68,33 @@ EFFECT_KNOWN_PARAMS = {
         "BrushSize",
         "BrushType",
     ],
+    "Level tracing": [
+        "MinimumThreshold",
+        "MaximumThreshold",
+    ],
+    "Grow from seeds": [
+        "SeedLocalityFactor",
+        "AutoUpdate",
+    ],
+    "Fill between slices": [
+        "AutoUpdate",
+    ],
+    "Margin": [
+        "ApplyToAllVisibleSegments",
+        "MarginSizeMm",
+    ],
+    "Hollow": [
+        "ApplyToAllVisibleSegments",
+        "ShellMode",
+        "ShellThicknessMm",
+    ],
+    "Smoothing": [
+        "ApplyToAllVisibleSegments",
+        "SmoothingMethod",
+        "KernelSizeMm",
+        "GaussianStandardDeviationMm",
+        "JointTaubinSmoothingFactor",
+    ],
     "Scissors": [
         "Operation",
         "Shape",
@@ -48,7 +103,32 @@ EFFECT_KNOWN_PARAMS = {
         "Operation",
         "MinimumSize",
     ],
+    "Logical operators": [
+        "Operation",
+        "ModifierSegmentID",
+        "BypassMasking",
+    ],
+    "Mask volume": [
+        "FillValue",
+        "BinaryMaskFillValueOutside",
+        "BinaryMaskFillValueInside",
+        "Operation",
+        "SoftEdgeMm",
+    ],
 }
+
+# Brush parameters shared across Paint, Draw, and Erase effects.
+COMMON_BRUSH_PARAMS = [
+    "BrushMinimumAbsoluteDiameter",
+    "BrushMaximumAbsoluteDiameter",
+    "BrushAbsoluteDiameter",
+    "BrushRelativeDiameter",
+    "BrushSphere",
+    "EditIn3DViews",
+    "BrushPixelMode",
+    "ColorSmudge",
+    "EraseAllSegments",
+]
 
 
 def hex_to_rgb_float(hex_color):
@@ -77,16 +157,20 @@ class SegmentationTab(qt.QWidget):
         self._modification_events = []
         self._segmentation_observer = None
         self._segmentation_core_observer = None
-        self._last_event_key = None
-        self._last_event_time = 0.0
         self._cached_effect_name = ""
         self._cached_effect_params = {}
         self._cached_segment_id = ""
+        self._cached_slice_context = {}
+        self._last_interaction_slice_context = {}
+        self._pending_slice_contexts = {}
         self._segment_effect_summary = {}
         self._segment_voxel_snapshots = {}
+        self._segment_labelmap_mtimes = {}
+        self._recorded_modification_mtimes = {}
         self._effect_params_by_name = {}
         self._context_timer = None
         self._segment_editor_observer = None
+        self._editor_slice_observers = []
         self._setup_ui()
 
     # ─── UI Setup ────────────────────────────────────────────────────────
@@ -103,9 +187,7 @@ class SegmentationTab(qt.QWidget):
 
         self._segment_editor_widget = slicer.qMRMLSegmentEditorWidget()
         self._segment_editor_widget.setMRMLScene(slicer.mrmlScene)
-        self._segment_editor_widget.setEffectNameOrder([
-            "Paint", "Erase", "Threshold", "Islands", "Scissors"
-        ])
+        self._segment_editor_widget.setEffectNameOrder(SEGMENT_EDITOR_EFFECT_ORDER)
         self._segment_editor_widget.unorderedEffectsVisible = False
         self._segment_editor_widget.setAddRemoveSegmentButtonsVisible(False)
         try:
@@ -156,6 +238,8 @@ class SegmentationTab(qt.QWidget):
     def set_volume(self, volume_node):
         """Bind a shared volume as the source for segmentation."""
         self._volume_node = volume_node
+        if volume_node:
+            install_slice_tracking()
         self._ensure_segmentation_node(volume_node)
         self._link_editor_to_nodes(volume_node)
         if self._seg_labels:
@@ -183,10 +267,16 @@ class SegmentationTab(qt.QWidget):
         self._modification_events = []
         self._segment_effect_summary = {}
         self._segment_voxel_snapshots = {}
+        self._segment_labelmap_mtimes = {}
+        self._recorded_modification_mtimes = {}
+        self._cached_slice_context = {}
+        self._last_interaction_slice_context = {}
+        self._pending_slice_contexts = {}
         self._effect_params_by_name = {}
         self._stop_context_timer()
         self._remove_segmentation_observer()
         self._remove_segment_editor_observer()
+        self._remove_editor_slice_tracking()
         self._stats_label.setText("Total segmented voxels: 0")
 
     # ─── Label Config (called by panel) ──────────────────────────────────
@@ -285,7 +375,7 @@ class SegmentationTab(qt.QWidget):
             self._label_to_segment_map[label_def.id] = seg_id
 
         self._select_first_segment()
-        self._reset_voxel_snapshots()
+        self._reset_modification_snapshots()
 
     def _select_first_segment(self):
         """Select the first configured segment in the segment editor."""
@@ -329,6 +419,7 @@ class SegmentationTab(qt.QWidget):
         self._segment_editor_widget.setMRMLSegmentEditorNode(self._segment_editor_node)
         self._segment_editor_widget.setSegmentationNode(self._segmentation_node)
         self._install_segment_editor_observer()
+        self._install_editor_slice_tracking()
 
         try:
             self._segment_editor_widget.setSourceVolumeNode(volume_node)
@@ -401,10 +492,114 @@ class SegmentationTab(qt.QWidget):
         if self._context_timer is not None:
             self._context_timer.stop()
 
+    def _normalize_slice_context(self, slice_info):
+        if not slice_info:
+            return {}
+        return PlaneSliceContext.from_slice_info(slice_info).to_export_dict()
+
+    def _remember_slice_interaction(self, view_name):
+        """Capture slice context when the user interacts with a specific slice view."""
+        ctx = remember_slice_view_interaction(view_name, self._volume_node)
+        if not ctx.get("plane") and not ctx.get("slicer_slice_view"):
+            return
+        self._last_interaction_slice_context = dict(ctx)
+        self._cached_slice_context = dict(ctx)
+        segment_id = self._cached_segment_id or self._resolve_current_segment_id()
+        if segment_id:
+            self._pending_slice_contexts[segment_id] = dict(ctx)
+
+    def _capture_editor_slice_context(self):
+        ctx = capture_slice_context_at_cursor(self._volume_node)
+        if ctx.get("plane") or ctx.get("slicer_slice_view"):
+            return ctx
+        if self._last_interaction_slice_context:
+            return dict(self._last_interaction_slice_context)
+        slicer_view = get_active_slice_view()
+        if slicer_view and self._volume_node:
+            return capture_slice_info_for_view(slicer_view, self._volume_node)
+        return capture_slice_info(self._volume_node)
+
+    def _install_editor_slice_tracking(self):
+        """Track slice-view interactions during segment editing."""
+        self._remove_editor_slice_tracking()
+        self._editor_slice_observers = []
+        try:
+            import qt
+            import vtk
+            layout_manager = slicer.app.layoutManager()
+            if not layout_manager:
+                return
+
+            for name in layout_manager.sliceViewNames():
+                slice_widget = layout_manager.sliceWidget(name)
+                if not slice_widget:
+                    continue
+
+                class _EditorSliceTracker(qt.QObject):
+                    def __init__(self, tab, view_name):
+                        super().__init__()
+                        self._tab = tab
+                        self._view_name = view_name
+
+                    def eventFilter(self, obj, event):
+                        if event.type() == qt.QEvent.MouseButtonPress:
+                            self._tab._remember_slice_interaction(self._view_name)
+                        elif event.type() == qt.QEvent.MouseMove:
+                            if event.buttons() & qt.Qt.LeftButton:
+                                self._tab._remember_slice_interaction(self._view_name)
+                        return False
+
+                tracker = _EditorSliceTracker(self, name)
+                slice_widget.installEventFilter(tracker)
+                self._editor_slice_observers.append((slice_widget, tracker))
+
+                slice_view = slice_widget.sliceView()
+                if not slice_view:
+                    continue
+                interactor = slice_view.interactor()
+                if not interactor:
+                    try:
+                        interactor = slice_view.renderWindow().GetInteractor()
+                    except Exception:
+                        interactor = None
+                if not interactor:
+                    continue
+
+                def _on_view_interaction(caller, event, view_name=name):
+                    self._remember_slice_interaction(view_name)
+
+                for event_id in (
+                    vtk.vtkCommand.LeftButtonPressEvent,
+                    vtk.vtkCommand.RightButtonPressEvent,
+                    vtk.vtkCommand.MouseMoveEvent,
+                ):
+                    tag = interactor.AddObserver(event_id, _on_view_interaction)
+                    self._editor_slice_observers.append((interactor, tag))
+        except Exception as e:
+            logger.warning(f"Could not install editor slice tracking: {e}")
+
+    def _remove_editor_slice_tracking(self):
+        for target, tag in getattr(self, "_editor_slice_observers", []):
+            try:
+                import qt
+                if isinstance(tag, qt.QObject):
+                    target.removeEventFilter(tag)
+                else:
+                    target.RemoveObserver(tag)
+            except Exception:
+                pass
+        self._editor_slice_observers = []
+
     def _cache_editor_context(self):
         segment_id = self._resolve_current_segment_id()
         if segment_id:
             self._cached_segment_id = segment_id
+
+        # Do not overwrite interaction-captured slice context during polling.
+        if not self._last_interaction_slice_context:
+            slice_info = self._capture_editor_slice_context()
+            if slice_info.get("plane") or slice_info.get("slicer_slice_view"):
+                self._cached_slice_context = dict(slice_info)
 
         effect_name = self._resolve_active_effect_name()
         if not effect_name or effect_name == "None":
@@ -424,10 +619,32 @@ class SegmentationTab(qt.QWidget):
         effect_name = self._cached_effect_name
         if not segment_id or not effect_name or effect_name == "None":
             return
-        self._check_segment_voxel_change(segment_id)
+        self._check_segment_modification(segment_id)
 
-    def _reset_voxel_snapshots(self):
+    def _get_segment_labelmap_mtime(self, segment_id):
+        if self._segmentation_node is None or not segment_id:
+            return 0
+        try:
+            import vtkSegmentationCore
+            segmentation = self._segmentation_node.GetSegmentation()
+            segment = segmentation.GetSegment(segment_id)
+            if not segment:
+                return 0
+            repr_name = (
+                vtkSegmentationCore.vtkSegmentationConverter
+                .GetSegmentationBinaryLabelmapRepresentationName()
+            )
+            labelmap = segment.GetRepresentation(repr_name)
+            if labelmap:
+                return int(labelmap.GetMTime())
+        except Exception as e:
+            logger.debug(f"Could not read labelmap mtime for {segment_id}: {e}")
+        return 0
+
+    def _reset_modification_snapshots(self):
         self._segment_voxel_snapshots = {}
+        self._segment_labelmap_mtimes = {}
+        self._recorded_modification_mtimes = {}
         if self._segmentation_node is None:
             return
         segmentation = self._segmentation_node.GetSegmentation()
@@ -435,42 +652,102 @@ class SegmentationTab(qt.QWidget):
             segment_id = segmentation.GetNthSegmentID(i)
             count = self._compute_labelmap_metrics(segment_id).get("voxel_count", 0)
             self._segment_voxel_snapshots[segment_id] = int(count)
+            self._segment_labelmap_mtimes[segment_id] = self._get_segment_labelmap_mtime(segment_id)
+
+    def _update_modification_snapshot(self, segment_id, mtime, count):
+        self._segment_labelmap_mtimes[segment_id] = mtime
+        self._segment_voxel_snapshots[segment_id] = count
 
     def _check_all_segments_for_changes(self):
+        """Check segments after a volume-scoped effect."""
         if self._segmentation_node is None:
             return
         self._cache_editor_context()
         segmentation = self._segmentation_node.GetSegmentation()
         for i in range(segmentation.GetNumberOfSegments()):
-            self._check_segment_voxel_change(segmentation.GetNthSegmentID(i))
+            self._check_segment_modification(segmentation.GetNthSegmentID(i))
 
-    def _check_segment_voxel_change(self, segment_id):
-        if not segment_id:
-            return
-        count = int(self._compute_labelmap_metrics(segment_id).get("voxel_count", 0))
-        previous = self._segment_voxel_snapshots.get(segment_id)
-        if previous is None:
-            self._segment_voxel_snapshots[segment_id] = count
-            return
-        if count == previous:
-            return
+    def _flush_pending_segment_changes(self):
+        """Pick up any pending edit on the currently selected segment before export."""
+        self._cache_editor_context()
+        segment_id = self._cached_segment_id or self._resolve_current_segment_id()
+        if segment_id:
+            self._check_segment_modification(segment_id)
 
-        effect_name = self._cached_effect_name or self._resolve_active_effect_name()
-        if not effect_name or effect_name == "None":
-            effect_name = "SegmentEditor"
+    def _resolve_modification_slice_context(self, segment_id, effect_name):
+        slice_info = capture_slice_context_at_cursor(self._volume_node)
+        if not slice_info.get("plane") and not slice_info.get("slicer_slice_view"):
+            slice_info = (
+                self._pending_slice_contexts.get(segment_id)
+                or self._last_interaction_slice_context
+                or self._cached_slice_context
+                or self._capture_editor_slice_context()
+            )
+        normalized = self._normalize_slice_context(slice_info)
+        if effect_name in VOLUME_SCOPED_EFFECTS:
+            normalized["edit_scope"] = "volume"
+        else:
+            normalized["edit_scope"] = "plane"
+        return normalized
+
+    def _collect_modification_parameters(self, effect_name):
         params = dict(self._cached_effect_params)
         if not params:
             params = dict(self._effect_params_by_name.get(effect_name, {}))
         if not params:
             params = self._collect_effect_parameters_for_name(effect_name)
+        common = self._collect_common_brush_parameters()
+        if common:
+            merged = dict(common)
+            merged.update(params)
+            params = merged
+        return params
+
+    def _check_segment_modification(self, segment_id):
+        if not segment_id:
+            return
+
+        mtime = self._get_segment_labelmap_mtime(segment_id)
+        count = int(self._compute_labelmap_metrics(segment_id).get("voxel_count", 0))
+        previous_mtime = self._segment_labelmap_mtimes.get(segment_id)
+        previous_count = self._segment_voxel_snapshots.get(segment_id)
+
+        if previous_mtime is None:
+            self._update_modification_snapshot(segment_id, mtime, count)
+            return
+
+        effect_name = self._cached_effect_name or self._resolve_active_effect_name()
+        if not effect_name or effect_name == "None":
+            effect_name = "SegmentEditor"
+
+        selected_id = self._cached_segment_id or self._resolve_current_segment_id()
+        if not should_record_segment_modification(
+            effect_name,
+            segment_id,
+            selected_id,
+            count,
+            previous_count,
+            mtime,
+            previous_mtime,
+        ):
+            self._update_modification_snapshot(segment_id, mtime, count)
+            return
+
+        if mtime and self._recorded_modification_mtimes.get(segment_id) == mtime:
+            self._update_modification_snapshot(segment_id, mtime, count)
+            return
+
+        params = self._collect_modification_parameters(effect_name)
+        slice_context = self._resolve_modification_slice_context(segment_id, effect_name)
 
         self._append_modification_event(
             segment_id,
             effect_name,
             params,
-            capture_slice_info(self._volume_node),
+            slice_context,
         )
-        self._segment_voxel_snapshots[segment_id] = count
+        self._recorded_modification_mtimes[segment_id] = mtime
+        self._update_modification_snapshot(segment_id, mtime, count)
 
     def _remove_segment_editor_observer(self):
         if self._segment_editor_node and self._segment_editor_observer:
@@ -707,6 +984,31 @@ class SegmentationTab(qt.QWidget):
         for name in names:
             yield name
 
+    def _collect_common_brush_parameters(self):
+        params = {}
+        node = self._segment_editor_node
+        if not node:
+            return params
+        for param_name in COMMON_BRUSH_PARAMS:
+            value = node.GetAttribute(param_name)
+            if value is not None and value != "":
+                params[param_name] = self._parse_node_attribute_value(value)
+        effect = self._get_active_effect()
+        if effect is None:
+            return params
+        for getter_name in ("doubleParameter", "integerParameter", "parameter", "stringParameter"):
+            for param_name in COMMON_BRUSH_PARAMS:
+                if param_name in params:
+                    continue
+                try:
+                    getter = getattr(effect, getter_name)
+                    value = getter(param_name) if callable(getter) else None
+                    if value is not None and value != "":
+                        params[param_name] = value
+                except Exception:
+                    pass
+        return params
+
     def _collect_effect_parameters_from_node(self, effect_name):
         params = {}
         node = self._segment_editor_node
@@ -738,30 +1040,43 @@ class SegmentationTab(qt.QWidget):
         if not segment_id or not effect_name:
             return
 
-        now = time.time()
-        debounce_key = (segment_id, effect_name)
-        if debounce_key == self._last_event_key and (now - self._last_event_time) < 2.0:
-            return
-        self._last_event_key = debounce_key
-        self._last_event_time = now
+        normalized_slice = self._normalize_slice_context(slice_context)
+        if normalized_slice.get("edit_scope") is None:
+            normalized_slice["edit_scope"] = (
+                "volume" if effect_name in VOLUME_SCOPED_EFFECTS else "plane"
+            )
 
         event = SegmentModificationEvent(
             effect_name=effect_name,
             segment_id=segment_id,
             segment_name=self._segment_display_name(segment_id),
-            slice_context=dict(slice_context or {}),
+            slice_context=normalized_slice,
             effect_parameters=dict(params or {}),
         )
         self._modification_events.append(event)
         self._segment_effect_summary[segment_id] = {
             "effect_name": effect_name,
             "effect_parameters": dict(params or {}),
-            "slice_context": dict(slice_context or {}),
+            "slice_context": dict(normalized_slice),
             "timestamp": event.timestamp,
         }
+        self._pending_slice_contexts.pop(segment_id, None)
 
     def _on_segment_modified(self):
-        self._check_all_segments_for_changes()
+        self._cache_editor_context()
+        ctx = capture_slice_context_at_cursor(self._volume_node)
+        if ctx.get("plane") or ctx.get("slicer_slice_view"):
+            self._last_interaction_slice_context = dict(ctx)
+            segment_id = self._cached_segment_id or self._resolve_current_segment_id()
+            if segment_id:
+                self._pending_slice_contexts[segment_id] = dict(ctx)
+        effect_name = self._cached_effect_name or self._resolve_active_effect_name()
+        if effect_name in VOLUME_SCOPED_EFFECTS:
+            self._check_all_segments_for_changes()
+            return
+        segment_id = self._cached_segment_id or self._resolve_current_segment_id()
+        if segment_id:
+            self._check_segment_modification(segment_id)
 
     def _record_modification_event(self):
         self._cache_editor_context()
@@ -770,15 +1085,25 @@ class SegmentationTab(qt.QWidget):
     def _collect_editor_state(self):
         self._cache_editor_context()
         effect = self._get_active_effect()
+        slice_context = self._normalize_slice_context(
+            capture_slice_context_at_cursor(self._volume_node)
+            or self._last_interaction_slice_context
+            or self._cached_slice_context
+        )
         state = {
             "active_effect": self._effect_name(effect) or self._cached_effect_name,
             "current_segment_id": self._resolve_current_segment_id(),
-            "slice_context": capture_slice_info(self._volume_node),
+            "slice_context": slice_context,
         }
         if effect:
             state["effect_parameters"] = self._collect_effect_parameters(effect)
         elif self._cached_effect_params:
             state["effect_parameters"] = dict(self._cached_effect_params)
+        common = self._collect_common_brush_parameters()
+        if common:
+            merged = dict(common)
+            merged.update(state.get("effect_parameters", {}))
+            state["effect_parameters"] = merged
         return state
 
     def _extent_ijk_to_bounds_ras(self, extent_ijk):
@@ -924,7 +1249,7 @@ class SegmentationTab(qt.QWidget):
 
     def get_segmentation_data(self):
         """Collect current segmentation metadata into a SegmentationData object."""
-        self._check_all_segments_for_changes()
+        self._flush_pending_segment_changes()
         data = SegmentationData()
 
         if self._segmentation_node:
@@ -947,8 +1272,6 @@ class SegmentationTab(qt.QWidget):
             data.source_volume_name = self._volume_node.GetName()
 
         data.label_to_segment_map = dict(self._label_to_segment_map)
-        data.modification_events = list(self._modification_events)
-        data.editor_state_at_export = self._collect_editor_state()
 
         if hasattr(self, "_last_export_filepath"):
             data.export_filepath = self._last_export_filepath
@@ -977,6 +1300,9 @@ class SegmentationTab(qt.QWidget):
                 last_event = seg_events[-1]
                 lbl.last_effect_name = last_event.effect_name
                 lbl.last_effect_parameters = dict(last_event.effect_parameters)
+            else:
+                lbl.last_effect_name = ""
+                lbl.last_effect_parameters = {}
 
             lbl.spatial_extent = self._build_segment_spatial_extent(
                 lbl.segment_id, full_stats, lbl.name, labelmap_metrics
@@ -1113,7 +1439,18 @@ class SegmentationTab(qt.QWidget):
             self._link_editor_to_nodes(volume_node)
         self._start_context_timer()
 
+        self._modification_events = list(seg_data.modification_events or [])
+        self._segment_effect_summary = {}
+        for event in self._modification_events:
+            self._segment_effect_summary[event.segment_id] = {
+                "effect_name": event.effect_name,
+                "effect_parameters": dict(event.effect_parameters),
+                "slice_context": dict(event.slice_context),
+                "timestamp": event.timestamp,
+            }
+
         self._select_first_segment()
+        self._reset_modification_snapshots()
 
         if seg_data.total_voxel_count > 0:
             self._stats_label.setText(f"Total segmented voxels: {seg_data.total_voxel_count:,}")
@@ -1131,6 +1468,7 @@ class SegmentationTab(qt.QWidget):
         self._stop_context_timer()
         self._remove_segmentation_observer()
         self._remove_segment_editor_observer()
+        self._remove_editor_slice_tracking()
         if self._segment_editor_node:
             try:
                 slicer.mrmlScene.RemoveNode(self._segment_editor_node)
