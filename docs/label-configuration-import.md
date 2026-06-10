@@ -5,12 +5,13 @@ Use this format when creating a JSON preset for the **Label Configuration** scre
 ## How to import
 
 1. Open Annotation Panel in 3D Slicer.
-2. On the **Label Configuration** screen, click **Import from JSON**.
-3. Select your `.json` file.
-4. Confirm when prompted — importing **replaces** all labels currently shown in the three category tables.
-5. Review the loaded labels, then click **Confirm & Start Annotation**.
+2. On the **Label Configuration** screen, either:
+   - choose a saved preset from the **Presets** dropdown (if any exist), or
+   - click **Import from JSON** and select a `.json` file from anywhere on disk.
+3. Confirm when prompted — loading a preset or import **replaces** all labels currently shown in the three category tables.
+4. Review the loaded labels, then click **Confirm & Start Annotation**.
 
-You can also export a starting point from the same screen with **Save as Preset**.
+To save labels you created manually, click **Save as Preset**, enter a **unique preset name** (required), and the configuration is written as JSON into the extension's `presets/` folder beside the module. Saved presets then appear in the dropdown automatically.
 
 ---
 
@@ -76,9 +77,9 @@ Each entry in an array is an object with these fields:
 
 ---
 
-## Full example (Spleen CT workflow)
+## Full example (multi-category workflow)
 
-This matches the built-in **Spleen CT Annotation** preset structure:
+Example preset with all three label categories populated:
 
 ```json
 {
@@ -197,6 +198,7 @@ Before sharing a preset file:
 
 ## Related files in this repository
 
-- `ConfigurationScreen.py` — Import/export UI and built-in presets
+- `ConfigurationScreen.py` — Label configuration UI
+- `PresetStorage.py` — Save/load presets from the extension `presets/` folder
 - `AnnotationModel.py` — `LabelConfig` and `LabelDefinition` schema
 - `LabelColors.py` — Default color palette for manual label creation

@@ -1,0 +1,28 @@
+{
+    "classification_labels": [
+      {
+        "name": "Normal",
+        "color": "#4CAF50",
+        "description": "No abnormality identified"
+      },
+      {
+        "name": "Abnormal",
+        "color": "#f44336",
+        "description": "Abnormality present"
+      }
+    ],
+    "roi_categories": [
+      {
+        "name": "Lesion",
+        "color": "#e6194b",
+        "description": "Focal lesion region"
+      }
+    ],
+    "segment_labels": [
+      {
+        "name": "Lesion",
+        "color": "#e6194b",
+        "description": "Lesion segmentation"
+      }
+    ]
+  }

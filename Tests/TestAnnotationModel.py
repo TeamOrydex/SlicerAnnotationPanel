@@ -3,6 +3,8 @@ import unittest
 import json
 import sys
 import os
+import shutil
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -677,6 +679,75 @@ class TestAnnotationRecordWithLabelConfig(unittest.TestCase):
         restored = LabelConfig.from_dict(d)
         self.assertEqual(restored.class_labels[0].name, "Normal")
         self.assertEqual(restored.roi_labels[0].description, "Tumor region")
+
+
+class TestPresetStorage(unittest.TestCase):
+    def setUp(self):
+        import PresetStorage as storage
+
+        self.storage = storage
+        self._original_module_dir = storage.MODULE_DIR
+        self._temp_dir = tempfile.mkdtemp(prefix="annotation_panel_presets_")
+        storage.MODULE_DIR = self._temp_dir
+
+    def tearDown(self):
+        self.storage.MODULE_DIR = self._original_module_dir
+        shutil.rmtree(self._temp_dir, ignore_errors=True)
+
+    def test_list_preset_names_empty_when_folder_missing(self):
+        self.assertEqual(self.storage.list_preset_names(), [])
+
+    def test_save_and_load_preset(self):
+        payload = {
+            "classification_labels": [{"name": "Normal", "color": "#4CAF50"}],
+            "roi_categories": [],
+            "segment_labels": [],
+        }
+        path = self.storage.save_preset("Brain Tumor", payload)
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(self.storage.list_preset_names(), ["Brain Tumor"])
+        loaded = self.storage.load_preset("Brain Tumor")
+        self.assertEqual(loaded["classification_labels"][0]["name"], "Normal")
+        self.assertEqual(loaded["preset_name"], "Brain Tumor")
+
+    def test_get_presets_dir_prefers_writable_location(self):
+        read_only_root = os.path.join(self._temp_dir, "readonly_module")
+        writable_root = os.path.join(self._temp_dir, "writable_home", ".AnnotationPanel", "presets")
+        self.storage.MODULE_DIR = read_only_root
+        self.storage._RESOLVED_PRESETS_DIR = None
+
+        original_candidates = self.storage._candidate_preset_dirs
+        original_is_writable = self.storage._is_dir_writable
+
+        def candidates():
+            return [os.path.join(read_only_root, "presets"), writable_root]
+
+        def is_writable(path):
+            return os.path.normpath(path) == os.path.normpath(writable_root)
+
+        self.storage._candidate_preset_dirs = candidates
+        self.storage._is_dir_writable = is_writable
+        try:
+            os.makedirs(writable_root, exist_ok=True)
+            chosen = self.storage.get_presets_dir()
+            self.assertEqual(chosen, writable_root)
+            payload = {"classification_labels": [], "roi_categories": [], "segment_labels": []}
+            path = self.storage.save_preset("Writable Test", payload)
+            self.assertTrue(path.startswith(writable_root))
+        finally:
+            self.storage._candidate_preset_dirs = original_candidates
+            self.storage._is_dir_writable = original_is_writable
+            self.storage._RESOLVED_PRESETS_DIR = None
+
+    def test_preset_name_must_be_unique(self):
+        payload = {"classification_labels": [], "roi_categories": [], "segment_labels": []}
+        self.storage.save_preset("Chest CT", payload)
+        with self.assertRaises(ValueError):
+            self.storage.save_preset("chest ct", payload)
+
+    def test_preset_name_required(self):
+        with self.assertRaises(ValueError):
+            self.storage.save_preset("   ", {})
 
 
 class TestLabelColors(unittest.TestCase):

@@ -42,14 +42,14 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         import qt
         from PanelWidget import AnnotationPanelRootWidget
 
-        self._load_preset_btn = qt.QPushButton("Load Brain Tumor Preset")
+        self._load_preset_btn = qt.QPushButton("Load Sample Config")
         self._load_preset_btn.setStyleSheet(
             "QPushButton { padding: 8px 16px; font-weight: bold; }"
         )
         self._load_preset_btn.setToolTip(
-            "Loads Brain Tumor Annotation preset into the config screen and confirms"
+            "Loads a sample label configuration into the config screen and confirms"
         )
-        self._load_preset_btn.clicked.connect(self._on_load_preset)
+        self._load_preset_btn.clicked.connect(self._on_load_sample_config)
         self.layout.addWidget(self._load_preset_btn)
 
         self._load_via_panel_btn = qt.QPushButton("Load MRHead via Panel")
@@ -94,24 +94,35 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
 
         self.layout.addStretch(1)
 
-    def _on_load_preset(self):
-        """Load Brain Tumor Annotation preset into config screen and confirm."""
-        from ConfigurationScreen import PRESETS
+    def _sample_label_config(self):
         from AnnotationModel import LabelDefinition, LabelConfig
 
-        preset = PRESETS["Brain Tumor Annotation"]
-        config = LabelConfig(
-            class_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
-                          for d in preset["class_labels"]],
-            roi_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
-                        for d in preset["roi_labels"]],
-            segmentation_classes=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
-                                  for d in preset["segmentation_classes"]],
+        return LabelConfig(
+            class_labels=[
+                LabelDefinition(name="Normal", color="#4CAF50", description="No abnormality identified"),
+                LabelDefinition(name="Pathological", color="#f44336", description="Abnormality present"),
+            ],
+            roi_labels=[
+                LabelDefinition(name="Tumor", color="#e6194b", description="Tumor"),
+                LabelDefinition(name="Lesion", color="#f58231", description="Lesion"),
+                LabelDefinition(name="Cyst", color="#42d4f4", description="Cyst"),
+                LabelDefinition(name="Artifact", color="#808080", description="Imaging artifact"),
+            ],
+            segmentation_classes=[
+                LabelDefinition(name="Tumor Core", color="#e6194b", description="Solid tumor"),
+                LabelDefinition(name="Enhancing Tumor", color="#ffe119", description="Enhancing region"),
+                LabelDefinition(name="Edema", color="#3cb44b", description="Peritumoral edema"),
+                LabelDefinition(name="Necrosis", color="#911eb4", description="Necrotic core"),
+            ],
         )
+
+    def _on_load_sample_config(self):
+        """Load a sample label configuration into the config screen and confirm."""
+        config = self._sample_label_config()
         self._panel._config_screen.load_config(config)
         self._panel._on_config_confirmed(config)
         slicer.util.infoDisplay(
-            "Brain Tumor Annotation preset loaded and confirmed.", "Test Harness"
+            "Sample label configuration loaded and confirmed.", "Test Harness"
         )
 
     def _on_load_via_panel(self):
@@ -170,19 +181,10 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
     def _on_test_full_workflow(self):
         """Full automated workflow: config -> scan -> annotate -> export -> verify."""
         import json as json_mod
-        from ConfigurationScreen import PRESETS
         from AnnotationModel import LabelDefinition, LabelConfig
 
-        # 1. Load preset and confirm config
-        preset = PRESETS["Brain Tumor Annotation"]
-        config = LabelConfig(
-            class_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
-                          for d in preset["class_labels"]],
-            roi_labels=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
-                        for d in preset["roi_labels"]],
-            segmentation_classes=[LabelDefinition(name=d["name"], color=d["color"], description=d.get("description", ""))
-                                  for d in preset["segmentation_classes"]],
-        )
+        # 1. Load sample config and confirm
+        config = self._sample_label_config()
         self._panel._on_config_confirmed(config)
 
         # 2. Load MRHead

@@ -1,83 +1,19 @@
+import os
 import qt
 import json
 
 from AnnotationModel import LabelDefinition, LabelConfig
 from LabelColors import next_available_color, normalize_hex_color, DEFAULT_LABEL_COLOR
-
-
-PRESETS = {
-    "Brain Tumor Annotation": {
-        "class_labels": [
-            {"name": "Normal", "color": "#4CAF50", "description": "No abnormality identified"},
-            {"name": "Pathological", "color": "#f44336", "description": "Abnormality present"},
-        ],
-        "roi_labels": [
-            {"name": "Tumor", "color": "#e6194b", "description": "Tumor"},
-            {"name": "Lesion", "color": "#f58231", "description": "Lesion"},
-            {"name": "Cyst", "color": "#42d4f4", "description": "Cyst"},
-            {"name": "Artifact", "color": "#808080", "description": "Imaging artifact"},
-        ],
-        "segmentation_classes": [
-            {"name": "Tumor Core", "color": "#e6194b", "description": "Solid tumor"},
-            {"name": "Enhancing Tumor", "color": "#ffe119", "description": "Enhancing region"},
-            {"name": "Edema", "color": "#3cb44b", "description": "Peritumoral edema"},
-            {"name": "Necrosis", "color": "#911eb4", "description": "Necrotic core"},
-        ],
-    },
-    "Chest CT Annotation": {
-        "class_labels": [
-            {"name": "Normal", "color": "#4CAF50", "description": "Normal appearance"},
-            {"name": "Abnormal", "color": "#f44336", "description": "Abnormal appearance"},
-            {"name": "Inconclusive", "color": "#FF9800", "description": "Indeterminate"},
-        ],
-        "roi_labels": [
-            {"name": "Nodule", "color": "#e6194b", "description": "Pulmonary nodule"},
-            {"name": "Mass", "color": "#f58231", "description": "Pulmonary mass"},
-            {"name": "Consolidation", "color": "#4363d8", "description": "Consolidation"},
-            {"name": "Ground Glass Opacity", "color": "#42d4f4", "description": "Ground-glass opacity"},
-        ],
-        "segmentation_classes": [
-            {"name": "Lung Parenchyma", "color": "#3cb44b", "description": "Lung parenchyma"},
-            {"name": "Nodule", "color": "#e6194b", "description": "Nodule segmentation"},
-            {"name": "Pleural Effusion", "color": "#4363d8", "description": "Pleural effusion"},
-        ],
-    },
-    "Cardiac MRI Annotation": {
-        "class_labels": [
-            {"name": "Normal", "color": "#4CAF50", "description": "Normal function"},
-            {"name": "Reduced EF", "color": "#f44336", "description": "Reduced ejection fraction"},
-        ],
-        "roi_labels": [
-            {"name": "Infarct", "color": "#e6194b", "description": "Infarct region"},
-            {"name": "Thrombus", "color": "#911eb4", "description": "Thrombus location"},
-            {"name": "Valve", "color": "#4363d8", "description": "Valve annotation"},
-        ],
-        "segmentation_classes": [
-            {"name": "LV Myocardium", "color": "#e6194b", "description": "Left ventricle wall"},
-            {"name": "LV Cavity", "color": "#3cb44b", "description": "LV blood pool"},
-            {"name": "RV Cavity", "color": "#4363d8", "description": "RV blood pool"},
-        ],
-    },
-    "Spleen CT Annotation": {
-        "class_labels": [
-            {"name": "Normal", "color": "#4CAF50", "description": "Normal spleen size and appearance"},
-            {"name": "Enlarged", "color": "#FF9800", "description": "Splenomegaly"},
-            {"name": "Abnormal", "color": "#f44336", "description": "Focal or diffuse abnormality"},
-        ],
-        "roi_labels": [
-            {"name": "Spleen", "color": "#8B4513", "description": "Spleen boundary region"},
-            {"name": "Lesion", "color": "#e6194b", "description": "Focal splenic lesion"},
-            {"name": "Infarct", "color": "#911eb4", "description": "Splenic infarct"},
-            {"name": "Accessory Spleen", "color": "#4363d8", "description": "Accessory splenic tissue"},
-            {"name": "Artifact", "color": "#808080", "description": "Imaging artifact"},
-        ],
-        "segmentation_classes": [
-            {"name": "Spleen", "color": "#8B4513", "description": "Spleen parenchyma"},
-            {"name": "Lesion", "color": "#e6194b", "description": "Focal lesion segmentation"},
-            {"name": "Infarct", "color": "#911eb4", "description": "Infarcted tissue"},
-        ],
-    },
-}
+from PresetStorage import (
+    get_presets_dir,
+    is_preset_name_taken,
+    list_preset_names,
+    load_preset,
+    normalize_preset_name,
+    preset_name_key,
+    save_preset,
+    _qt_line_text,
+)
 
 
 class LabelCategoryWidget(qt.QGroupBox):
@@ -373,6 +309,8 @@ class ConfigurationScreen(qt.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._on_confirm_callback = None
+        self._preset_changed_callback = None
+        self._current_preset_name = None
 
         outer_layout = qt.QVBoxLayout()
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -407,10 +345,6 @@ class ConfigurationScreen(qt.QWidget):
         preset_group.setLayout(preset_layout)
 
         self._preset_combo = qt.QComboBox()
-        self._preset_combo.addItem("-- Select a Preset --")
-        for name in PRESETS:
-            self._preset_combo.addItem(name)
-        self._preset_combo.currentIndexChanged.connect(self._on_preset_selected)
         preset_layout.addWidget(self._preset_combo)
 
         save_preset_btn = qt.QPushButton("Save as Preset")
@@ -456,6 +390,15 @@ class ConfigurationScreen(qt.QWidget):
 
         self._content_layout.addStretch()
 
+        try:
+            self._preset_combo.currentIndexChanged.connect(self._on_preset_selected)
+            self._refresh_preset_combo()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Preset dropdown could not be initialized: %s", exc
+            )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -478,6 +421,34 @@ class ConfigurationScreen(qt.QWidget):
         """Register a callback invoked when the user confirms. Receives a LabelConfig."""
         self._on_confirm_callback = callback
 
+    def set_preset_changed_callback(self, callback):
+        """Register a callback invoked when the active preset identity changes."""
+        self._preset_changed_callback = callback
+
+    def get_current_preset_name(self):
+        return self._current_preset_name
+
+    def set_current_preset_name(self, preset_name):
+        self._current_preset_name = normalize_preset_name(preset_name) or None
+
+    def _load_preset_config(self, config, preset_name):
+        """Load label tables and notify when the preset identity changes."""
+        old_name = self._current_preset_name
+        new_name = normalize_preset_name(preset_name) or None
+        self.load_config(config)
+        if preset_name_key(old_name) != preset_name_key(new_name):
+            self._current_preset_name = new_name
+            if self._preset_changed_callback:
+                self._preset_changed_callback(new_name, old_name)
+        else:
+            self._current_preset_name = new_name
+
+    @staticmethod
+    def _file_dialog_path(result):
+        if isinstance(result, (tuple, list)):
+            return result[0] if result else ""
+        return result or ""
+
     # ------------------------------------------------------------------
     # Confirm
     # ------------------------------------------------------------------
@@ -499,51 +470,147 @@ class ConfigurationScreen(qt.QWidget):
     # Presets
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _combo_current_text(combo):
+        text = combo.currentText
+        return text() if callable(text) else (text or "")
+
+    def _refresh_preset_combo(self, select_name=None):
+        self._preset_combo.blockSignals(True)
+        previous = select_name or self._combo_current_text(self._preset_combo)
+        self._preset_combo.clear()
+        try:
+            preset_names = list_preset_names()
+        except Exception:
+            preset_names = []
+        for name in preset_names:
+            self._preset_combo.addItem(name)
+        if select_name:
+            index = self._preset_combo.findText(select_name)
+            if index >= 0:
+                self._preset_combo.setCurrentIndex(index)
+        elif previous:
+            index = self._preset_combo.findText(previous)
+            if index >= 0:
+                self._preset_combo.setCurrentIndex(index)
+        elif self._preset_combo.count > 0:
+            self._clear_preset_selection()
+        self._preset_combo.blockSignals(False)
+
+    def _clear_preset_selection(self):
+        try:
+            self._preset_combo.setCurrentIndex(-1)
+        except Exception:
+            pass
+
     def _has_any_labels(self):
         config = self.get_config()
         return bool(config.class_labels or config.roi_labels or config.segmentation_classes)
 
     def _on_preset_selected(self, index):
-        if index <= 0:
+        if index < 0 or not hasattr(self, "_class_section"):
             return
         preset_name = self._preset_combo.itemText(index)
-        if preset_name not in PRESETS:
+        if not preset_name:
             return
 
         if self._has_any_labels():
             reply = qt.QMessageBox.question(
                 self,
                 "Load Preset",
-                "Loading a preset will replace all current labels. Continue?",
+                f'Load preset "{preset_name}"?\n\n'
+                "This replaces all labels in the configuration tables. "
+                "Existing annotations will be cleared because label mappings "
+                "from another preset are not compatible.",
                 qt.QMessageBox.Yes | qt.QMessageBox.No,
             )
             if reply != qt.QMessageBox.Yes:
-                self._preset_combo.blockSignals(True)
-                self._preset_combo.setCurrentIndex(0)
-                self._preset_combo.blockSignals(False)
+                self._clear_preset_selection()
                 return
 
-        data = PRESETS[preset_name]
-        config = LabelConfig.from_dict(data)
-        self.load_config(config)
+        try:
+            data = load_preset(preset_name)
+            config = LabelConfig.from_dict(data)
+            display_name = data.get("preset_name") or preset_name
+            self._load_preset_config(config, display_name)
+        except Exception as exc:
+            qt.QMessageBox.critical(self, "Error", f"Failed to load preset:\n{exc}")
+            self._refresh_preset_combo()
+
+    def _open_save_preset_dialog(self):
+        presets_dir = get_presets_dir()
+
+        while True:
+            dialog = qt.QDialog(self)
+            dialog.setWindowTitle("Save Preset")
+            dialog.setMinimumWidth(360)
+
+            layout = qt.QVBoxLayout(dialog)
+            form_layout = qt.QFormLayout()
+            name_edit = qt.QLineEdit()
+            name_edit.setPlaceholderText("Required — must be unique")
+            form_layout.addRow("Preset name:", name_edit)
+            layout.addLayout(form_layout)
+
+            hint = qt.QLabel(f"Presets are saved to:\n{presets_dir}")
+            hint.setStyleSheet("color: #666; font-size: 11px;")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+
+            btn_box = qt.QDialogButtonBox()
+            btn_box.addButton("Save", qt.QDialogButtonBox.AcceptRole)
+            btn_box.addButton("Cancel", qt.QDialogButtonBox.RejectRole)
+            btn_box.accepted.connect(dialog.accept)
+            btn_box.rejected.connect(dialog.reject)
+            layout.addWidget(btn_box)
+
+            if dialog.exec_() != qt.QDialog.Accepted:
+                return None
+
+            name = normalize_preset_name(_qt_line_text(name_edit))
+            if not name:
+                qt.QMessageBox.warning(self, "Validation", "Preset name is required.")
+                continue
+            if is_preset_name_taken(name):
+                qt.QMessageBox.warning(
+                    self,
+                    "Validation",
+                    f'A preset named "{name}" already exists. Choose a unique name.',
+                )
+                continue
+            return name
 
     def _on_save_preset(self):
         config = self.get_config()
-        path = qt.QFileDialog.getSaveFileName(
-            self, "Save Preset", "", "JSON Files (*.json)"
-        )
-        if not path:
+        if not self._has_any_labels():
+            qt.QMessageBox.warning(
+                self,
+                "No Labels",
+                "Add at least one label before saving a preset.",
+            )
             return
+
+        preset_name = self._open_save_preset_dialog()
+        if not preset_name:
+            return
+
         try:
-            with open(path, "w") as f:
-                json.dump(config.to_dict(), f, indent=2)
-            qt.QMessageBox.information(self, "Saved", f"Preset saved to:\n{path}")
+            path = save_preset(preset_name, config.to_dict())
+            saved_name = os.path.splitext(os.path.basename(path))[0]
+            self._refresh_preset_combo(select_name=saved_name)
+            qt.QMessageBox.information(
+                self,
+                "Saved",
+                f'Preset "{preset_name}" saved to:\n{path}',
+            )
         except Exception as exc:
             qt.QMessageBox.critical(self, "Error", f"Failed to save preset:\n{exc}")
 
     def _on_import_preset(self):
-        path = qt.QFileDialog.getOpenFileName(
-            self, "Import Preset", "", "JSON Files (*.json)"
+        path = self._file_dialog_path(
+            qt.QFileDialog.getOpenFileName(
+                self, "Import Preset", "", "JSON Files (*.json)"
+            )
         )
         if not path:
             return
@@ -552,16 +619,19 @@ class ConfigurationScreen(qt.QWidget):
             reply = qt.QMessageBox.question(
                 self,
                 "Import Preset",
-                "Importing will replace all current labels. Continue?",
+                "Importing will replace all labels in the configuration tables. "
+                "Existing annotations will be cleared because label mappings "
+                "from another preset are not compatible.\n\nContinue?",
                 qt.QMessageBox.Yes | qt.QMessageBox.No,
             )
             if reply != qt.QMessageBox.Yes:
                 return
 
         try:
-            with open(path, "r") as f:
-                data = json.load(f)
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
             config = LabelConfig.from_dict(data)
-            self.load_config(config)
+            display_name = data.get("preset_name") or os.path.splitext(os.path.basename(path))[0]
+            self._load_preset_config(config, display_name)
         except Exception as exc:
             qt.QMessageBox.critical(self, "Error", f"Failed to import preset:\n{exc}")

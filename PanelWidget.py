@@ -4,6 +4,7 @@ import json
 import slicer
 
 from AnnotationModel import AnnotationRecord, ScanMetadata, LabelConfig, ClassLabelAnnotation
+from PresetStorage import preset_name_key
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
 from SegmentationTab import SegmentationTab
@@ -26,6 +27,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._record = AnnotationRecord()
         self._active_volume_node = None
         self._label_config = None  # LabelConfig, set after config is confirmed
+        self._active_preset_name = None
         self._setup_ui()
         self._update_readiness()
 
@@ -97,6 +99,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         # Page 0: Configuration Screen
         self._config_screen = ConfigurationScreen()
         self._config_screen.set_confirm_callback(self._on_config_confirmed)
+        self._config_screen.set_preset_changed_callback(self._on_config_preset_changed)
         self._stacked_widget.addWidget(self._config_screen)
 
         # Page 1: Annotation Area (header + tabs)
@@ -168,29 +171,47 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def _on_config_confirmed(self, config):
         """Called when user confirms label configuration."""
-        old_config = self._label_config
-        if old_config is not None:
-            self._collect_all_data()
-            self._handle_config_changes(old_config, config)
+        new_preset = self._config_screen.get_current_preset_name()
+        preset_changed = preset_name_key(new_preset) != preset_name_key(self._active_preset_name)
 
+        if preset_changed:
+            self._clear_all_annotations(notify=False)
+            self._push_labels_to_tabs(config, old_config=None)
+        else:
+            old_config = self._label_config
+            if old_config is not None:
+                self._collect_all_data()
+                self._handle_config_changes(old_config, config)
+            self._push_labels_to_tabs(config, old_config)
+
+        self._active_preset_name = new_preset
         self._label_config = config
         self._record.label_config = config
-        self._push_labels_to_tabs(config, old_config)
         self._stacked_widget.setCurrentIndex(1)
         self._update_readiness()
+
+    def _on_config_preset_changed(self, new_name, old_name):
+        """Clear annotations when a different preset is loaded on the config screen."""
+        if preset_name_key(new_name) == preset_name_key(old_name):
+            return
+        self._collect_all_data()
+        if not self._has_any_annotations():
+            return
+        self._clear_all_annotations(notify=True)
 
     def _on_edit_config_clicked(self):
         """Return to config screen for editing."""
         result = qt.QMessageBox.warning(
             self, "Edit Configuration",
             "Editing the configuration may invalidate existing annotations "
-            "if you remove labels that are already in use.\n\nContinue?",
+            "if you switch to a different preset or remove labels that are already in use.\n\nContinue?",
             qt.QMessageBox.Yes | qt.QMessageBox.No,
             qt.QMessageBox.No,
         )
         if result != qt.QMessageBox.Yes:
             return
         self._config_screen.load_config(self._label_config)
+        self._config_screen.set_current_preset_name(self._active_preset_name)
         self._stacked_widget.setCurrentIndex(0)
 
     def _push_labels_to_tabs(self, config, old_config=None):
@@ -307,6 +328,42 @@ class AnnotationPanelRootWidget(qt.QWidget):
             )
 
     # ─── Readiness ───────────────────────────────────────────────────────
+
+    def _has_any_annotations(self):
+        has_seg = (
+            self._record.segmentation is not None
+            and (
+                bool(self._record.segmentation.labels)
+                or bool(self._record.segmentation.per_label_voxel_counts)
+                or self._record.segmentation.total_voxel_count > 0
+            )
+        )
+        return bool(self._record.class_labels or self._record.rois or has_seg)
+
+    def _clear_all_annotations(self, notify=False):
+        """Remove all classification, ROI, and segmentation annotations. Keeps scan loaded."""
+        self._record.class_labels = []
+        self._record.rois = []
+        self._record.segmentation = None
+
+        self._class_label_tab.set_class_label_annotations([])
+
+        volume = self._active_volume_node
+        self._roi_tab.clear_and_unbind()
+        self._segmentation_tab.clear_and_unbind()
+
+        if volume:
+            self._roi_tab.set_volume(volume)
+            self._segmentation_tab.set_volume(volume)
+        if self._label_config:
+            self._segmentation_tab.set_labels(self._label_config.segmentation_classes)
+
+        if notify:
+            qt.QMessageBox.information(
+                self,
+                "Annotations Cleared",
+                "Existing annotations were removed because the label preset changed.",
+            )
 
     def _update_readiness(self):
         """Enable annotation tabs only when both config and series are ready."""
