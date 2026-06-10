@@ -22,7 +22,7 @@ ROI_GEOMETRY_TYPES = {
     "freehand_curve": "Freehand Contour",
     "line": "Linear Measurement",
     "ellipse": "Ellipse",
-    "rectangle_2d": "Planar Rectangle",
+    "rectangle_2d": "Bounding Box 2D",
 }
 
 

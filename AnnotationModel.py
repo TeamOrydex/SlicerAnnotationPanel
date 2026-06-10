@@ -5,6 +5,20 @@ import json
 from datetime import datetime, timezone
 
 from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export, roi_geometry_type_from_export
+from SliceInfo import anatomical_slice_index_from_ijk
+
+
+def _resolve_slice_index(plane, data: dict) -> int:
+    """Resolve anatomical slice index, including legacy exports that stored physical offset."""
+    ijk = list(data.get("voxel_index_ijk", data.get("volume_slice_ijk", [])))
+    slice_offset_mm = float(data.get("slice_offset_mm", 0) or 0)
+    slice_index = int(data.get("slice_number", data.get("slice_index", 0)) or 0)
+    if ijk and len(ijk) >= 3:
+        anatomical = anatomical_slice_index_from_ijk(plane, ijk)
+        if slice_offset_mm == 0 and slice_index != anatomical:
+            return anatomical
+        return slice_index or anatomical
+    return slice_index
 
 ANNOTATION_SCHEMA_VERSION = "1.1.0"
 
@@ -75,18 +89,24 @@ class LabelConfig:
         )
 
 
+def _plane_display_name(plane: str) -> str:
+    """Return a human-readable plane label such as 'Axial Plane'."""
+    normalized = slice_view_to_plane(plane)
+    if not normalized:
+        return plane
+    if normalized.endswith(" Plane"):
+        return normalized
+    return f"{normalized} Plane"
+
+
 @dataclass
-class ClassLabelAnnotation:
-    """A classification label applied at a specific image slice."""
-    label: str = ""
+class PlaneSliceContext:
+    """Slice position and geometry for one anatomical plane."""
     slice_view: str = ""
     slice_index: int = 0
+    slice_offset_mm: float = 0.0
     slice_position_ras: list = field(default_factory=list)
     volume_slice_ijk: list = field(default_factory=list)
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    category_id: str = ""
-    category_color: str = ""
-    category_description: str = ""
     slicer_slice_view: str = ""
     slice_to_ras_matrix: list = field(default_factory=list)
     field_of_view: list = field(default_factory=list)
@@ -96,15 +116,12 @@ class ClassLabelAnnotation:
     volume_name: str = ""
 
     @classmethod
-    def from_slice_context(cls, label_def, slice_info: dict) -> "ClassLabelAnnotation":
-        """Build a rich annotation from a label definition and captured slice context."""
+    def from_slice_info(cls, slice_info: dict) -> "PlaneSliceContext":
+        plane = slice_info.get("plane", slice_info.get("slice_view", ""))
         return cls(
-            label=label_def.name,
-            category_id=label_def.id,
-            category_color=label_def.color,
-            category_description=label_def.description,
-            slice_view=slice_info.get("plane", slice_info.get("slice_view", "")),
-            slice_index=slice_info.get("slice_number", slice_info.get("slice_index", 0)),
+            slice_view=_plane_display_name(plane),
+            slice_index=_resolve_slice_index(plane, slice_info),
+            slice_offset_mm=float(slice_info.get("slice_offset_mm", 0) or 0),
             slice_position_ras=list(slice_info.get("position_ras", slice_info.get("slice_position_ras", []))),
             volume_slice_ijk=list(slice_info.get("voxel_index_ijk", slice_info.get("volume_slice_ijk", []))),
             slicer_slice_view=slice_info.get("slicer_slice_view", ""),
@@ -116,46 +133,49 @@ class ClassLabelAnnotation:
             volume_name=slice_info.get("volume_name", ""),
         )
 
-    def to_dict(self) -> dict:
+    def to_export_dict(self) -> dict:
+        """Compact slice context for JSON export (no duplicate legacy keys)."""
+        plane = slice_view_to_plane(self.slice_view)
         payload = {
-            "category": self.label,
-            "category_id": self.category_id,
-            "category_color": self.category_color,
-            "category_description": self.category_description,
-            "plane": slice_view_to_plane(self.slice_view),
-            "slicer_slice_view": self.slicer_slice_view,
+            "plane": plane,
             "slice_number": self.slice_index,
+            "slicer_slice_view": self.slicer_slice_view,
             "position_ras": list(self.slice_position_ras),
             "voxel_index_ijk": list(self.volume_slice_ijk),
+        }
+        if self.slice_spacing:
+            payload["slice_spacing"] = self.slice_spacing
+        if self.slice_normal_ras:
+            payload["slice_normal_ras"] = list(self.slice_normal_ras)
+        return payload
+
+    def to_dict(self) -> dict:
+        plane = slice_view_to_plane(self.slice_view)
+        payload = {
+            "plane": plane,
+            "slice_view": self.slice_view or _plane_display_name(plane),
+            "slice_number": self.slice_index,
+            "slice_index": self.slice_index,
+            "slice_offset_mm": self.slice_offset_mm,
+            "position_ras": list(self.slice_position_ras),
+            "voxel_index_ijk": list(self.volume_slice_ijk),
+            "slicer_slice_view": self.slicer_slice_view,
             "slice_to_ras_matrix": list(self.slice_to_ras_matrix),
             "field_of_view": list(self.field_of_view),
             "slice_spacing": self.slice_spacing,
             "slice_normal_ras": list(self.slice_normal_ras),
             "volume_node_id": self.volume_node_id,
             "volume_name": self.volume_name,
-            "created_at": self.created_at,
-            # Legacy aliases for downstream tools that expect older keys.
-            "label": self.label,
-            "slice_view": slice_view_to_plane(self.slice_view),
-            "slice_index": self.slice_index,
-            "slice_position_ras": list(self.slice_position_ras),
-            "volume_slice_ijk": list(self.volume_slice_ijk),
         }
         return payload
 
     @classmethod
-    def from_dict(cls, data) -> "ClassLabelAnnotation":
-        if isinstance(data, cls):
-            return data
-        if isinstance(data, str):
-            return cls(label=data)
+    def from_dict(cls, data: dict) -> "PlaneSliceContext":
+        plane = data.get("plane", data.get("slice_view", ""))
         return cls(
-            label=data.get("category", data.get("label", "")),
-            category_id=data.get("category_id", ""),
-            category_color=data.get("category_color", ""),
-            category_description=data.get("category_description", ""),
-            slice_view=data.get("plane", data.get("slice_view", "")),
-            slice_index=data.get("slice_number", data.get("slice_index", 0)),
+            slice_view=data.get("slice_view", _plane_display_name(plane)),
+            slice_index=_resolve_slice_index(plane, data),
+            slice_offset_mm=float(data.get("slice_offset_mm", 0) or 0),
             slice_position_ras=data.get("position_ras", data.get("slice_position_ras", [])),
             volume_slice_ijk=data.get("voxel_index_ijk", data.get("volume_slice_ijk", [])),
             slicer_slice_view=data.get("slicer_slice_view", ""),
@@ -165,8 +185,139 @@ class ClassLabelAnnotation:
             slice_normal_ras=data.get("slice_normal_ras", []),
             volume_node_id=data.get("volume_node_id", ""),
             volume_name=data.get("volume_name", ""),
+        )
+
+
+@dataclass
+class ClassLabelAnnotation:
+    """A classification label applied with slice context from all three planes."""
+    label: str = ""
+    plane_slices: List[PlaneSliceContext] = field(default_factory=list)
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    category_id: str = ""
+    category_color: str = ""
+    category_description: str = ""
+    # Legacy single-plane fields kept for backward compatibility.
+    slice_view: str = ""
+    slice_index: int = 0
+    slice_offset_mm: float = 0.0
+    slice_position_ras: list = field(default_factory=list)
+    volume_slice_ijk: list = field(default_factory=list)
+    slicer_slice_view: str = ""
+    slice_to_ras_matrix: list = field(default_factory=list)
+    field_of_view: list = field(default_factory=list)
+    slice_spacing: float = 0.0
+    slice_normal_ras: list = field(default_factory=list)
+    volume_node_id: str = ""
+    volume_name: str = ""
+
+    def __post_init__(self):
+        if not self.plane_slices and (self.slice_view or self.slice_index):
+            self.plane_slices = [PlaneSliceContext(
+                slice_view=_plane_display_name(self.slice_view),
+                slice_index=self.slice_index,
+                slice_offset_mm=self.slice_offset_mm,
+                slice_position_ras=list(self.slice_position_ras),
+                volume_slice_ijk=list(self.volume_slice_ijk),
+                slicer_slice_view=self.slicer_slice_view,
+                slice_to_ras_matrix=list(self.slice_to_ras_matrix),
+                field_of_view=list(self.field_of_view),
+                slice_spacing=self.slice_spacing,
+                slice_normal_ras=list(self.slice_normal_ras),
+                volume_node_id=self.volume_node_id,
+                volume_name=self.volume_name,
+            )]
+
+    def _sync_legacy_fields(self):
+        """Populate legacy single-plane fields from the primary axial slice."""
+        primary = self.get_plane_slice("Axial") or (self.plane_slices[0] if self.plane_slices else None)
+        if not primary:
+            return
+        self.slice_view = slice_view_to_plane(primary.slice_view) or primary.slice_view
+        self.slice_index = primary.slice_index
+        self.slice_offset_mm = primary.slice_offset_mm
+        self.slice_position_ras = list(primary.slice_position_ras)
+        self.volume_slice_ijk = list(primary.volume_slice_ijk)
+        self.slicer_slice_view = primary.slicer_slice_view
+        self.slice_to_ras_matrix = list(primary.slice_to_ras_matrix)
+        self.field_of_view = list(primary.field_of_view)
+        self.slice_spacing = primary.slice_spacing
+        self.slice_normal_ras = list(primary.slice_normal_ras)
+        self.volume_node_id = primary.volume_node_id
+        self.volume_name = primary.volume_name
+
+    def get_plane_slice(self, plane_name: str) -> Optional[PlaneSliceContext]:
+        normalized = slice_view_to_plane(plane_name)
+        for plane_slice in self.plane_slices:
+            if slice_view_to_plane(plane_slice.slice_view) == normalized:
+                return plane_slice
+        return None
+
+    @classmethod
+    def from_slice_context(cls, label_def, slice_info: dict) -> "ClassLabelAnnotation":
+        """Build a rich annotation from a label definition and one captured slice context."""
+        annotation = cls(
+            label=label_def.name,
+            category_id=label_def.id,
+            category_color=label_def.color,
+            category_description=label_def.description,
+            plane_slices=[PlaneSliceContext.from_slice_info(slice_info)],
+        )
+        annotation._sync_legacy_fields()
+        return annotation
+
+    @classmethod
+    def from_all_planes_context(cls, label_def, plane_slice_infos: list) -> "ClassLabelAnnotation":
+        """Build an annotation with slice context from Axial, Coronal, and Sagittal views."""
+        annotation = cls(
+            label=label_def.name,
+            category_id=label_def.id,
+            category_color=label_def.color,
+            category_description=label_def.description,
+            plane_slices=[PlaneSliceContext.from_slice_info(info) for info in plane_slice_infos],
+        )
+        annotation._sync_legacy_fields()
+        return annotation
+
+    def to_dict(self) -> dict:
+        return {
+            "category": self.label,
+            "category_id": self.category_id,
+            "category_color": self.category_color,
+            "category_description": self.category_description,
+            "plane_slices": [plane.to_dict() for plane in self.plane_slices],
+            "created_at": self.created_at,
+            # Legacy alias for category name only; slice context lives in plane_slices.
+            "label": self.label,
+        }
+
+    @classmethod
+    def from_dict(cls, data) -> "ClassLabelAnnotation":
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, str):
+            return cls(label=data)
+
+        plane_slices_data = data.get("plane_slices", [])
+        if plane_slices_data:
+            plane_slices = [PlaneSliceContext.from_dict(item) for item in plane_slices_data]
+        else:
+            plane = data.get("plane", data.get("slice_view", ""))
+            if plane or data.get("slice_number") or data.get("slice_index"):
+                plane_slices = [PlaneSliceContext.from_dict(data)]
+            else:
+                plane_slices = []
+
+        annotation = cls(
+            label=data.get("category", data.get("label", "")),
+            category_id=data.get("category_id", ""),
+            category_color=data.get("category_color", ""),
+            category_description=data.get("category_description", ""),
+            plane_slices=plane_slices,
             created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
         )
+        annotation._sync_legacy_fields()
+        return annotation
 
 
 @dataclass
@@ -178,6 +329,7 @@ class ROIAnnotation:
     color: str = "#ff0000"
     slice_view: str = ""
     slice_index: int = 0
+    slice_offset_mm: float = 0.0
     control_points: list = field(default_factory=list)
     radii: list = field(default_factory=list)
     orientation: list = field(default_factory=list)
@@ -213,9 +365,9 @@ class ROIAnnotation:
             "color": self.color,
             "plane": slice_view_to_plane(self.slice_view),
             "slicer_slice_view": self.slicer_slice_view,
-            "slice_number": self.slice_index,
+            "slice_index": self.slice_index,
+            "slice_offset_mm": self.slice_offset_mm,
             "position_ras": list(self.slice_position_ras),
-            "voxel_index_ijk": list(self.volume_slice_ijk),
             "slice_to_ras_matrix": list(self.slice_to_ras_matrix),
             "field_of_view": list(self.field_of_view),
             "slice_spacing": self.slice_spacing,
@@ -233,12 +385,6 @@ class ROIAnnotation:
             "mrml_node_id": self.mrml_node_id,
             "mrml_node_name": self.mrml_node_name,
             "created_at": self.created_at,
-            # Legacy aliases
-            "roi_type": self.roi_type,
-            "label": self.label,
-            "slice_view": slice_view_to_plane(self.slice_view),
-            "slice_index": self.slice_index,
-            "control_points": list(self.control_points),
         }
 
     @classmethod
@@ -252,7 +398,10 @@ class ROIAnnotation:
             category_description=data.get("category_description", ""),
             color=data.get("color", "#ff0000"),
             slice_view=data.get("plane", data.get("slice_view", "")),
-            slice_index=data.get("slice_number", data.get("slice_index", 0)),
+            slice_index=_resolve_slice_index(
+                data.get("plane", data.get("slice_view", "")), data
+            ),
+            slice_offset_mm=float(data.get("slice_offset_mm", 0) or 0),
             slicer_slice_view=data.get("slicer_slice_view", ""),
             slice_position_ras=data.get("position_ras", data.get("slice_position_ras", [])),
             volume_slice_ijk=data.get("voxel_index_ijk", data.get("volume_slice_ijk", [])),
@@ -316,6 +465,45 @@ class SegmentSpatialExtent:
         )
 
 
+# Effects that operate on the whole segment rather than a single slice plane.
+VOLUME_SCOPED_EFFECTS = frozenset({
+    "Margin",
+    "Hollow",
+    "Smoothing",
+    "Islands",
+    "Logical operators",
+    "Fill between slices",
+    "Grow from seeds",
+    "Mask volume",
+})
+
+
+def should_record_segment_modification(
+    effect_name,
+    segment_id,
+    selected_segment_id,
+    count,
+    previous_count,
+    mtime,
+    previous_mtime,
+    volume_scoped_effects=VOLUME_SCOPED_EFFECTS,
+):
+    """Return True when a segment edit should produce a modification event."""
+    count_changed = count != previous_count
+    mtime_changed = mtime != previous_mtime
+    if not count_changed and not mtime_changed:
+        return False
+
+    if effect_name not in volume_scoped_effects:
+        if selected_segment_id and segment_id != selected_segment_id:
+            return False
+        return count_changed
+
+    if count_changed:
+        return True
+    return mtime_changed and count > 0
+
+
 @dataclass
 class SegmentModificationEvent:
     """A recorded segment-editor action (paint, threshold, erase, etc.)."""
@@ -326,13 +514,19 @@ class SegmentModificationEvent:
     slice_context: dict = field(default_factory=dict)
     effect_parameters: dict = field(default_factory=dict)
 
+    def normalized_slice_context(self) -> dict:
+        """Return compact slice context for export."""
+        if not self.slice_context:
+            return {}
+        return PlaneSliceContext.from_slice_info(self.slice_context).to_export_dict()
+
     def to_dict(self) -> dict:
         return {
             "effect_name": self.effect_name,
             "segment_id": self.segment_id,
             "segment_name": self.segment_name,
             "timestamp": self.timestamp,
-            "slice_context": dict(self.slice_context),
+            "slice_context": self.normalized_slice_context(),
             "effect_parameters": dict(self.effect_parameters),
         }
 
@@ -425,12 +619,6 @@ class SegmentationData:
             "total_segmented_voxels": self.total_voxel_count,
             "segment_voxel_counts": dict(self.per_label_voxel_counts),
             "label_to_segment_map": dict(self.label_to_segment_map),
-            "modification_events": [event.to_dict() for event in self.modification_events],
-            "editor_state_at_export": dict(self.editor_state_at_export),
-            # Legacy aliases
-            "labels": [lbl.to_dict() for lbl in self.labels],
-            "total_voxel_count": self.total_voxel_count,
-            "per_label_voxel_counts": dict(self.per_label_voxel_counts),
         }
 
     @classmethod
@@ -438,6 +626,9 @@ class SegmentationData:
         segment_data = data.get("segments", data.get("labels", []))
         labels = [SegmentLabel.from_dict(lbl) for lbl in segment_data]
         events = data.get("modification_events", [])
+        if not events:
+            for lbl_data in segment_data:
+                events.extend(lbl_data.get("modification_events", []))
         return cls(
             labels=labels,
             export_format=data.get("export_format", "nrrd"),
@@ -578,15 +769,6 @@ class AnnotationRecord:
             for item in self.class_labels
         ]
 
-    def _build_summary(self) -> dict:
-        seg_voxels = self.segmentation.total_voxel_count if self.segmentation else 0
-        return {
-            "classification_label_count": len(self.class_labels),
-            "roi_count": len(self.rois),
-            "segment_count": len(self.segmentation.labels) if self.segmentation else 0,
-            "total_segmented_voxels": seg_voxels,
-        }
-
     def to_dict(self) -> dict:
         return {
             "schema_version": ANNOTATION_SCHEMA_VERSION,
@@ -597,7 +779,6 @@ class AnnotationRecord:
             "series_id": self.series_id,
             "created_by": self.created_by,
             "created_at": self.created_at,
-            "summary": self._build_summary(),
             "label_configuration": self.label_config.to_dict() if self.label_config else None,
             "series_metadata": self.scan.to_dict() if self.scan else None,
             "classification_labels": [lbl.to_dict() for lbl in self.class_labels],
