@@ -38,6 +38,9 @@ RECTANGLE_TOOL_IDS = ("rectangle_3d", "rectangle")
 
 EXTENDABLE_ROI_TYPES = frozenset({"polygon", "freehand_curve", "line"})
 
+ROI_VISIBILITY_ICON_VISIBLE = "\U0001F441"
+ROI_VISIBILITY_ICON_HIDDEN = "\U0001F648"
+
 
 def hex_to_rgb_float(hex_color):
     """Convert '#rrggbb' to (r, g, b) floats in [0, 1]."""
@@ -76,6 +79,7 @@ class ROITab(qt.QWidget):
         self._rectangle_finalize_scheduled = set()
         self._extend_roi = None
         self._extend_mode_active = False
+        self._global_roi_hidden = False
 
         self._setup_ui()
         self._check_available_tools()
@@ -87,6 +91,7 @@ class ROITab(qt.QWidget):
 
         self._build_toolbar(layout)
         self._build_label_section(layout)
+        self._build_roi_list_header(layout)
         self._build_roi_table(layout)
         self._build_actions(layout)
 
@@ -161,6 +166,26 @@ class ROITab(qt.QWidget):
         label_layout.addLayout(row3)
 
         parent_layout.addWidget(label_frame)
+
+    def _build_roi_list_header(self, parent_layout):
+        header_row = qt.QHBoxLayout()
+
+        heading = qt.QLabel("ROI Annotations")
+        heading.setStyleSheet("font-weight: bold; font-size: 12px;")
+        header_row.addWidget(heading)
+        header_row.addStretch()
+
+        self._global_visibility_btn = qt.QPushButton(ROI_VISIBILITY_ICON_VISIBLE)
+        self._global_visibility_btn.setFixedSize(28, 28)
+        self._global_visibility_btn.setToolTip("Hide all ROIs")
+        self._global_visibility_btn.setStyleSheet(
+            "QPushButton { border: none; font-size: 14px; }"
+            " QPushButton:hover { background: #E3F2FD; border-radius: 4px; }"
+        )
+        self._global_visibility_btn.clicked.connect(self._toggle_global_roi_visibility)
+        header_row.addWidget(self._global_visibility_btn)
+
+        parent_layout.addLayout(header_row)
 
     def _build_roi_table(self, parent_layout):
         self._table = qt.QTableWidget()
@@ -722,7 +747,11 @@ class ROITab(qt.QWidget):
             r, g, b = hex_to_rgb_float(self._current_color)
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
-            self._configure_markup_display(display_node, transform_handles=False)
+            self._configure_markup_display(
+                display_node,
+                transform_handles=False,
+                visible=not self._global_roi_hidden,
+            )
 
         self._placement_node = node
 
@@ -1002,7 +1031,9 @@ class ROITab(qt.QWidget):
         except Exception:
             pass
 
-    def _copy_markup_display(self, source_node, target_node, transform_handles=False):
+    def _copy_markup_display(
+        self, source_node, target_node, transform_handles=False, visible=True
+    ):
         source_display = source_node.GetDisplayNode() if source_node else None
         target_display = target_node.GetDisplayNode() if target_node else None
         if not source_display or not target_display:
@@ -1010,7 +1041,9 @@ class ROITab(qt.QWidget):
         try:
             target_display.SetSelectedColor(source_display.GetSelectedColor())
             target_display.SetColor(source_display.GetColor())
-            self._configure_markup_display(target_display, transform_handles=transform_handles)
+            self._configure_markup_display(
+                target_display, transform_handles=transform_handles, visible=visible
+            )
         except Exception:
             pass
 
@@ -1031,7 +1064,9 @@ class ROITab(qt.QWidget):
         if not curve:
             return node
         curve.SetName(node.GetName())
-        self._copy_markup_display(node, curve, roi.transform_handles_enabled)
+        self._copy_markup_display(
+            node, curve, roi.transform_handles_enabled, visible=roi.visible
+        )
         for pos in points:
             curve.AddControlPoint(pos[0], pos[1], pos[2])
         self._set_curve_linear(curve)
@@ -1103,7 +1138,9 @@ class ROITab(qt.QWidget):
         display_node = node.GetDisplayNode()
         if display_node:
             self._configure_markup_display(
-                display_node, transform_handles=roi.transform_handles_enabled
+                display_node,
+                transform_handles=roi.transform_handles_enabled,
+                visible=roi.visible,
             )
 
         try:
@@ -1142,6 +1179,7 @@ class ROITab(qt.QWidget):
                 self._configure_markup_display(
                     node.GetDisplayNode(),
                     transform_handles=roi.transform_handles_enabled,
+                    visible=roi.visible,
                 )
 
         self._extend_mode_active = False
@@ -1376,9 +1414,8 @@ class ROITab(qt.QWidget):
             r, g, b = hex_to_rgb_float(roi.color)
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
-            self._configure_markup_display(
-                display_node, transform_handles=roi.transform_handles_enabled
-            )
+        roi.visible = not self._global_roi_hidden
+        self._apply_roi_visibility(roi)
         self._roi_annotations.append(roi)
         self._update_table()
         self._sync_to_record()
@@ -1499,6 +1536,8 @@ class ROITab(qt.QWidget):
                 except Exception:
                     pass
         self._roi_annotations = []
+        self._global_roi_hidden = False
+        self._sync_global_visibility_button()
         self._update_table()
         self._volume_node = None
 
@@ -1526,12 +1565,84 @@ class ROITab(qt.QWidget):
 
     # ─── Helpers ─────────────────────────────────────────────────────────
 
-    def _configure_markup_display(self, display_node, transform_handles=False):
+    def _visibility_icon(self, visible):
+        return ROI_VISIBILITY_ICON_VISIBLE if visible else ROI_VISIBILITY_ICON_HIDDEN
+
+    def _visibility_tooltip(self, visible, scope="this ROI"):
+        if visible:
+            return f"Hide {scope}"
+        return f"Show {scope}"
+
+    def _apply_roi_visibility(self, roi):
+        if not roi or not roi.mrml_node_id:
+            return
+        visible = bool(roi.visible)
+        try:
+            node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
+            if not node:
+                return
+            node.SetDisplayVisibility(visible)
+            display_node = node.GetDisplayNode()
+            if display_node:
+                self._configure_markup_display(
+                    display_node,
+                    transform_handles=roi.transform_handles_enabled,
+                    visible=visible,
+                )
+        except Exception:
+            pass
+
+    def _set_roi_visible(self, roi, visible):
+        roi.visible = bool(visible)
+        self._apply_roi_visibility(roi)
+
+    def _toggle_roi_visibility(self, row):
+        if row >= len(self._roi_annotations):
+            return
+        roi = self._roi_annotations[row]
+        self._set_roi_visible(roi, not roi.visible)
+        self._sync_global_visibility_button()
+        self._update_table()
+
+    def _toggle_global_roi_visibility(self):
+        if self._global_roi_hidden:
+            for roi in self._roi_annotations:
+                self._set_roi_visible(roi, True)
+            self._global_roi_hidden = False
+        else:
+            for roi in self._roi_annotations:
+                self._set_roi_visible(roi, False)
+            self._global_roi_hidden = True
+        self._sync_global_visibility_button()
+        self._update_table()
+
+    def _sync_global_visibility_button(self):
+        if not hasattr(self, "_global_visibility_btn"):
+            return
+        if self._global_roi_hidden:
+            self._global_visibility_btn.setText(ROI_VISIBILITY_ICON_HIDDEN)
+            self._global_visibility_btn.setToolTip("Show all ROIs")
+        else:
+            self._global_visibility_btn.setText(ROI_VISIBILITY_ICON_VISIBLE)
+            self._global_visibility_btn.setToolTip("Hide all ROIs")
+
+    def _make_visibility_button(self, row, roi):
+        btn = qt.QPushButton(self._visibility_icon(roi.visible))
+        btn.setFixedSize(24, 24)
+        btn.setToolTip(self._visibility_tooltip(roi.visible))
+        btn.setStyleSheet(
+            "QPushButton { border: none; font-size: 14px; }"
+            " QPushButton:hover { background: #E3F2FD; border-radius: 4px; }"
+        )
+        btn.clicked.connect(lambda _checked=False, r=row: self._toggle_roi_visibility(r))
+        return btn
+
+    def _configure_markup_display(self, display_node, transform_handles=False, visible=True):
         """Apply visibility settings; transform_handles controls move/rotate widget."""
         if not display_node:
             return
         try:
-            display_node.SetVisibility(True)
+            display_node.SetVisibility(bool(visible))
             display_node.SetHandlesInteractive(bool(transform_handles))
         except Exception:
             pass
@@ -1564,6 +1675,7 @@ class ROITab(qt.QWidget):
             self._configure_markup_display(
                 node.GetDisplayNode(),
                 transform_handles=roi.transform_handles_enabled,
+                visible=roi.visible,
             )
 
     def _on_roi_transform_handles_toggled(self, roi, checked):
@@ -1613,7 +1725,9 @@ class ROITab(qt.QWidget):
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
             self._configure_markup_display(
-                display_node, transform_handles=roi.transform_handles_enabled
+                display_node,
+                transform_handles=roi.transform_handles_enabled,
+                visible=roi.visible,
             )
 
     # ─── Table Management ────────────────────────────────────────────────
@@ -1630,6 +1744,8 @@ class ROITab(qt.QWidget):
             action_layout = qt.QHBoxLayout(action_widget)
             action_layout.setContentsMargins(0, 0, 0, 0)
             action_layout.setSpacing(2)
+
+            action_layout.addWidget(self._make_visibility_button(row, roi))
 
             delete_btn = qt.QPushButton("\u2715")
             delete_btn.setFixedSize(24, 24)
@@ -1688,12 +1804,7 @@ class ROITab(qt.QWidget):
             try:
                 node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
                 if node:
-                    node.SetDisplayVisibility(True)
-                    display_node = node.GetDisplayNode()
-                    if display_node:
-                        self._configure_markup_display(
-                            display_node, transform_handles=roi.transform_handles_enabled
-                        )
+                    self._apply_roi_visibility(roi)
                     try:
                         slicer.modules.markups.logic().SetActiveList(node)
                     except Exception:
@@ -1943,15 +2054,13 @@ class ROITab(qt.QWidget):
             self._apply_box_orientation_from_roi(node, roi)
             self._sync_roi_geometry(node)
 
-        # Set color
+        # Set color and apply current visibility state.
         display_node = node.GetDisplayNode()
         if display_node:
             r, g, b = hex_to_rgb_float(roi.color)
             display_node.SetSelectedColor(r, g, b)
             display_node.SetColor(r, g, b)
-            self._configure_markup_display(
-                display_node, transform_handles=roi.transform_handles_enabled
-            )
+        self._apply_roi_visibility(roi)
 
         return node
 
