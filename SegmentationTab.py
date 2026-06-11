@@ -700,6 +700,8 @@ class SegmentationTab(qt.QWidget):
                 scalar_node = self._labelmap_as_scalar_volume(labelmap_node)
                 slicer.util.saveNode(scalar_node, export_path)
             else:
+                if not export_path.lower().endswith(".nrrd"):
+                    export_path = f"{export_path}.nrrd"
                 slicer.util.saveNode(labelmap_node, export_path)
 
             if not os.path.exists(export_path):
@@ -715,6 +717,65 @@ class SegmentationTab(qt.QWidget):
                 slicer.mrmlScene.RemoveNode(scalar_node)
             if labelmap_node is not None:
                 slicer.mrmlScene.RemoveNode(labelmap_node)
+
+    def export_segmentation_node_to_file(self, filepath):
+        """Export the segmentation node as Slicer .seg.nrrd with segment names and colors."""
+        if self._segmentation_node is None:
+            self._last_export_error = "Segmentation is not available."
+            return False
+
+        self._last_export_error = ""
+        try:
+            export_path = filepath
+            if not export_path.lower().endswith(".seg.nrrd"):
+                if export_path.lower().endswith(".nrrd"):
+                    export_path = f"{export_path[:-5]}.seg.nrrd"
+                else:
+                    export_path = f"{export_path}.seg.nrrd"
+
+            if self._volume_node:
+                self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
+                    self._volume_node
+                )
+
+            if not slicer.util.saveNode(self._segmentation_node, export_path):
+                self._last_export_error = f"Could not write segmentation to {export_path}"
+                return False
+            if not os.path.exists(export_path):
+                self._last_export_error = f"Export file was not created: {export_path}"
+                return False
+            return True
+        except Exception as e:
+            self._last_export_error = str(e)
+            logger.error(f"Segmentation node export failed: {e}")
+            return False
+
+    def _load_segmentation_from_seg_nrrd(self, filepath, volume_node):
+        """Load a Slicer-native segmentation file that preserves names and colors."""
+        loaded_node_ids = slicer.util.load(filepath) or []
+        segmentation_node = None
+        for node_id in loaded_node_ids:
+            node = slicer.mrmlScene.GetNodeByID(node_id)
+            if node and node.IsA("vtkMRMLSegmentationNode"):
+                segmentation_node = node
+                break
+        if segmentation_node is None:
+            segmentation_node = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSegmentationNode")
+        if segmentation_node is None:
+            raise RuntimeError(f"No segmentation node loaded from {filepath}")
+
+        segmentation_node.SetName("AnnotationSegmentation")
+        segmentation_node.CreateDefaultDisplayNodes()
+        if volume_node:
+            segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(volume_node)
+        self._segmentation_node = segmentation_node
+        self._install_segmentation_observer()
+        display_node = self._segmentation_node.GetDisplayNode()
+        if display_node:
+            display_node.SetVisibility(True)
+            display_node.SetAllSegmentsVisibility(True)
+            display_node.SetOpacity(self._opacity_slider.value / 100.0)
+        self._link_editor_to_nodes(volume_node)
 
     def _labelmap_as_scalar_volume(self, labelmap_node):
         """Copy a labelmap into a scalar volume node so NIfTI writers can persist it."""
@@ -1655,29 +1716,34 @@ class SegmentationTab(qt.QWidget):
                             pass
                         self._segmentation_node = None
 
-                    labelmap_node = slicer.util.loadLabelVolume(seg_data.export_filepath)
-                    self._segmentation_node = slicer.mrmlScene.AddNewNodeByClass(
-                        "vtkMRMLSegmentationNode"
-                    )
-                    self._segmentation_node.CreateDefaultDisplayNodes()
-                    self._segmentation_node.SetName("AnnotationSegmentation")
-
-                    slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                        labelmap_node, self._segmentation_node
-                    )
-                    slicer.mrmlScene.RemoveNode(labelmap_node)
-
-                    if volume_node:
-                        self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
-                            volume_node
+                    if seg_data.export_filepath.lower().endswith(".seg.nrrd"):
+                        self._load_segmentation_from_seg_nrrd(
+                            seg_data.export_filepath, volume_node
                         )
-                    self._install_segmentation_observer()
-                    display_node = self._segmentation_node.GetDisplayNode()
-                    if display_node:
-                        display_node.SetVisibility(True)
-                        display_node.SetAllSegmentsVisibility(True)
-                        display_node.SetOpacity(self._opacity_slider.value / 100.0)
-                    self._link_editor_to_nodes(volume_node)
+                    else:
+                        labelmap_node = slicer.util.loadLabelVolume(seg_data.export_filepath)
+                        self._segmentation_node = slicer.mrmlScene.AddNewNodeByClass(
+                            "vtkMRMLSegmentationNode"
+                        )
+                        self._segmentation_node.CreateDefaultDisplayNodes()
+                        self._segmentation_node.SetName("AnnotationSegmentation")
+
+                        slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                            labelmap_node, self._segmentation_node
+                        )
+                        slicer.mrmlScene.RemoveNode(labelmap_node)
+
+                        if volume_node:
+                            self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
+                                volume_node
+                            )
+                        self._install_segmentation_observer()
+                        display_node = self._segmentation_node.GetDisplayNode()
+                        if display_node:
+                            display_node.SetVisibility(True)
+                            display_node.SetAllSegmentsVisibility(True)
+                            display_node.SetOpacity(self._opacity_slider.value / 100.0)
+                        self._link_editor_to_nodes(volume_node)
                 except Exception as e:
                     self._last_import_error = str(e)
                     logger.error(f"Failed to load segmentation mask: {e}")

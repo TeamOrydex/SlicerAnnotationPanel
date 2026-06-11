@@ -52,14 +52,16 @@ Formal export writes a folder under the directory you choose:
 <export-directory>/
 └── <folder-name>/
     ├── annotations.json
-    └── segmentation.nii.gz   # when segmentation annotations exist
+    ├── segmentation.nii.gz       # when segmentation annotations exist
+    ├── segmentation.nrrd         # when segmentation annotations exist
+    └── segmentation.seg.nrrd     # when segmentation annotations exist
 ```
 
 Folder naming uses scan metadata when a series is linked (`Patient_123_Scan`, volume
 name, study/series id). Without scan metadata, exports use a standalone fallback such
 as `AnnotationSession_2026_06_11/` or `Export_<id-prefix>/`.
 
-`annotations.json` contains classification labels, ROIs, label configuration, and series metadata. Segmentation voxel data is exported separately as `segmentation.nii.gz`, not embedded in the JSON.
+`annotations.json` contains classification labels, ROIs, label configuration, and series metadata. Segmentation voxel data is exported separately as `segmentation.nii.gz`, `segmentation.nrrd`, and `segmentation.seg.nrrd` (Slicer-native with names and colors), not embedded in the JSON.
 
 **Import Annotations** and **Export Annotations** are available in the annotation
 workspace (after configuration is confirmed). Import restores an export folder
@@ -84,7 +86,7 @@ Each export includes:
 | Image series metadata | `series_metadata` |
 | Classification labels | `classification_labels` |
 | Regions of interest | `regions_of_interest` |
-| Segmentation volume | `segmentation.nii.gz` (sibling file) |
+| Segmentation volume | `segmentation.seg.nrrd` (preferred), `segmentation.nii.gz`, or `segmentation.nrrd` (sibling files) |
 | Anatomical planes | `Axial`, `Coronal`, `Sagittal` |
 
 ## Installation
