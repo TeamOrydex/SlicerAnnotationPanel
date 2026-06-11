@@ -28,9 +28,58 @@ LABEL_COLOR_PALETTE = [
     "#aaffc3",
     "#ffd8b1",
     "#a9a9a9",
+    "#006400",
+    "#8B008B",
+    "#FF1493",
+    "#00CED1",
+    "#FFD700",
+    "#708090",
+    "#2F4F4F",
+    "#CD853F",
+    "#4682B4",
+    "#D2691E",
+    "#5F9EA0",
+    "#6495ED",
+    "#DA70D6",
+    "#32CD32",
+    "#FF6347",
+    "#40E0D0",
+    "#EE82EE",
+    "#F0E68C",
+    "#DDA0DD",
+    "#98FB98",
+    "#F08080",
+    "#87CEEB",
+    "#DEB887",
+    "#00FA9A",
+    "#1E90FF",
+    "#ADFF2F",
+    "#FF4500",
+    "#6A5ACD",
+    "#20B2AA",
+    "#B22222",
+    "#228B22",
 ]
 
 DEFAULT_LABEL_COLOR = LABEL_COLOR_PALETTE[0]
+
+# Deterministic palette rotations so each category starts with a different color.
+_CATEGORY_ROTATION_OFFSETS = {
+    "classification": 0,
+    "roi": 18,
+    "segmentation": 36,
+}
+
+
+def get_category_palette(category_key):
+    """Return a rotated copy of the base palette for the given category."""
+    palette = list(LABEL_COLOR_PALETTE)
+    if not palette:
+        return palette
+    offset = _CATEGORY_ROTATION_OFFSETS.get(category_key, 0) % len(palette)
+    if offset:
+        palette = palette[offset:] + palette[:offset]
+    return palette
 
 
 def normalize_hex_color(color):
