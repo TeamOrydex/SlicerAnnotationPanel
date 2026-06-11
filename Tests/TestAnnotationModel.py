@@ -19,6 +19,8 @@ from AnnotationModel import (
     label_configs_differ,
     segment_label_def_for_label_value,
     EXPORT_ANNOTATIONS_FILENAME, EXPORT_SEGMENTATION_FILENAME,
+    EXPORT_SEGMENTATION_NRRD_FILENAME, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME,
+    find_segmentation_volume_path, segmentation_export_format_for_path,
 )
 from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export
 from SliceInfo import anatomical_slice_index_from_ijk
@@ -1375,12 +1377,41 @@ class TestExportFolderNaming(unittest.TestCase):
     def test_export_filenames(self):
         self.assertEqual(EXPORT_ANNOTATIONS_FILENAME, "annotations.json")
         self.assertEqual(EXPORT_SEGMENTATION_FILENAME, "segmentation.nii.gz")
+        self.assertEqual(EXPORT_SEGMENTATION_NRRD_FILENAME, "segmentation.nrrd")
+        self.assertEqual(EXPORT_SEGMENTATION_SEG_NRRD_FILENAME, "segmentation.seg.nrrd")
 
     def test_segmentation_volume_path_for_annotation_file(self):
         path = AnnotationRecord.segmentation_volume_path_for_annotation_file(
             "/tmp/export/Scan_001/annotations.json"
         )
         self.assertEqual(path, "/tmp/export/Scan_001/segmentation.nii.gz")
+
+    def test_find_segmentation_volume_path_prefers_seg_nrrd(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            seg_path = os.path.join(export_dir, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME)
+            nifti_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_NRRD_FILENAME)
+            for path in (seg_path, nifti_path, nrrd_path):
+                with open(path, "wb") as handle:
+                    handle.write(b"\x00")
+            self.assertEqual(find_segmentation_volume_path(export_dir), seg_path)
+
+    def test_find_segmentation_volume_path_prefers_nifti_over_plain_nrrd(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            nifti_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_NRRD_FILENAME)
+            with open(nifti_path, "wb") as handle:
+                handle.write(b"\x00")
+            with open(nrrd_path, "wb") as handle:
+                handle.write(b"\x00")
+            self.assertEqual(find_segmentation_volume_path(export_dir), nifti_path)
+
+    def test_find_segmentation_volume_path_falls_back_to_nrrd(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_NRRD_FILENAME)
+            with open(nrrd_path, "wb") as handle:
+                handle.write(b"\x00")
+            self.assertEqual(find_segmentation_volume_path(export_dir), nrrd_path)
 
 
 class TestImportResolution(unittest.TestCase):
@@ -1407,11 +1438,11 @@ class TestImportResolution(unittest.TestCase):
 
             resolution = resolve_import_paths(json_path)
             self.assertEqual(resolution.annotations_path, json_path)
-            self.assertEqual(
-                resolution.segmentation_path,
-                os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME),
+            self.assertEqual(resolution.segmentation_path, "")
+            self.assertIn(
+                "Neither segmentation.seg.nrrd, segmentation.nii.gz, nor segmentation.nrrd was found",
+                resolution.warnings[0],
             )
-            self.assertIn("segmentation.nii.gz was not found", resolution.warnings[0])
 
     def test_resolve_import_paths_missing_both_files(self):
         with tempfile.TemporaryDirectory() as export_dir:
@@ -1429,6 +1460,54 @@ class TestImportResolution(unittest.TestCase):
             self.assertTrue(resolution.has_segmentation_file)
             self.assertFalse(resolution.has_annotations_file)
             self.assertIn("annotations.json was not found", resolution.warnings[0])
+
+    def test_resolve_import_paths_nrrd_only_folder(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_NRRD_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write("{}")
+            with open(nrrd_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(export_dir)
+            self.assertEqual(resolution.segmentation_path, nrrd_path)
+            self.assertTrue(resolution.has_segmentation_file)
+            self.assertEqual(resolution.warnings, [])
+
+    def test_resolve_import_paths_from_nrrd_file(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_NRRD_FILENAME)
+            with open(nrrd_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(nrrd_path)
+            self.assertEqual(resolution.segmentation_path, nrrd_path)
+            self.assertTrue(resolution.is_importable())
+
+    def test_resolve_import_paths_from_seg_nrrd_file(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            seg_path = os.path.join(export_dir, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME)
+            with open(seg_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(seg_path)
+            self.assertEqual(resolution.segmentation_path, seg_path)
+            self.assertTrue(resolution.is_importable())
+
+    def test_segmentation_export_format_for_path(self):
+        self.assertEqual(
+            segmentation_export_format_for_path("/tmp/segmentation.seg.nrrd"),
+            "seg.nrrd",
+        )
+        self.assertEqual(
+            segmentation_export_format_for_path("/tmp/segmentation.nrrd"),
+            "nrrd",
+        )
+        self.assertEqual(
+            segmentation_export_format_for_path("/tmp/segmentation.nii.gz"),
+            "nifti",
+        )
 
     def test_build_record_from_export_folder(self):
         label_config = LabelConfig(
@@ -1462,6 +1541,58 @@ class TestImportResolution(unittest.TestCase):
             self.assertIsNotNone(imported.segmentation)
             self.assertEqual(imported.segmentation.export_filepath, nifti_path)
             self.assertEqual(imported.segmentation.export_format, "nifti")
+
+    def test_build_record_from_export_folder_nrrd_only(self):
+        label_config = LabelConfig(
+            segmentation_classes=[LabelDefinition(id="s1", name="Tumor", color="#0000ff")],
+        )
+        record = AnnotationRecord(
+            label_config=label_config,
+            segmentation=SegmentationData(
+                labels=[SegmentLabel(name="Tumor", color="#0000ff", segment_id="Segment_1")],
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_NRRD_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write(record.to_export_json())
+            with open(nrrd_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(export_dir)
+            imported, errors = build_record_from_import(resolution)
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(imported)
+            self.assertEqual(imported.segmentation.export_filepath, nrrd_path)
+            self.assertEqual(imported.segmentation.export_format, "nrrd")
+
+    def test_build_record_from_export_folder_seg_nrrd(self):
+        label_config = LabelConfig(
+            segmentation_classes=[LabelDefinition(id="s1", name="Tumor", color="#0000ff")],
+        )
+        record = AnnotationRecord(
+            label_config=label_config,
+            segmentation=SegmentationData(
+                labels=[SegmentLabel(name="Tumor", color="#0000ff", segment_id="Segment_1")],
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            seg_path = os.path.join(export_dir, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write(record.to_export_json())
+            with open(seg_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(export_dir)
+            imported, errors = build_record_from_import(resolution)
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(imported)
+            self.assertEqual(imported.segmentation.export_filepath, seg_path)
+            self.assertEqual(imported.segmentation.export_format, "seg.nrrd")
 
     def test_build_record_segmentation_only_uses_fallback_config(self):
         with tempfile.TemporaryDirectory() as export_dir:

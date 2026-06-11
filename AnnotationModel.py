@@ -32,6 +32,30 @@ ANNOTATION_SCHEMA_VERSION = "1.1.0"
 
 EXPORT_ANNOTATIONS_FILENAME = "annotations.json"
 EXPORT_SEGMENTATION_FILENAME = "segmentation.nii.gz"
+EXPORT_SEGMENTATION_NRRD_FILENAME = "segmentation.nrrd"
+EXPORT_SEGMENTATION_SEG_NRRD_FILENAME = "segmentation.seg.nrrd"
+
+
+def find_segmentation_volume_path(directory: str) -> str:
+    """Return an existing sibling segmentation file, preferring Slicer-native seg.nrrd."""
+    seg_nrrd_path = os.path.join(directory, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME)
+    if os.path.isfile(seg_nrrd_path):
+        return seg_nrrd_path
+    nifti_path = os.path.join(directory, EXPORT_SEGMENTATION_FILENAME)
+    if os.path.isfile(nifti_path):
+        return nifti_path
+    nrrd_path = os.path.join(directory, EXPORT_SEGMENTATION_NRRD_FILENAME)
+    if os.path.isfile(nrrd_path):
+        return nrrd_path
+    return ""
+
+
+def segmentation_export_format_for_path(filepath: str) -> str:
+    if filepath.lower().endswith(".seg.nrrd"):
+        return "seg.nrrd"
+    if filepath.lower().endswith(".nrrd"):
+        return "nrrd"
+    return "nifti"
 
 
 @dataclass
@@ -57,7 +81,7 @@ class ImportResolution:
 
 
 def resolve_import_paths(path: str) -> ImportResolution:
-    """Resolve annotations.json and segmentation.nii.gz from a folder or JSON file path."""
+    """Resolve annotations.json and a segmentation volume from a folder or file path."""
     resolution = ImportResolution(source_path=path or "")
     if not path:
         resolution.errors.append("No import path was provided.")
@@ -67,15 +91,13 @@ def resolve_import_paths(path: str) -> ImportResolution:
     if os.path.isdir(normalized):
         resolution.directory = normalized
         resolution.annotations_path = os.path.join(normalized, EXPORT_ANNOTATIONS_FILENAME)
-        resolution.segmentation_path = os.path.join(normalized, EXPORT_SEGMENTATION_FILENAME)
+        resolution.segmentation_path = find_segmentation_volume_path(normalized)
     elif os.path.isfile(normalized):
         if normalized.lower().endswith(".json"):
             resolution.annotations_path = normalized
             resolution.directory = os.path.dirname(normalized)
-            resolution.segmentation_path = AnnotationRecord.segmentation_volume_path_for_annotation_file(
-                normalized
-            )
-        elif normalized.lower().endswith((".nii", ".nii.gz")):
+            resolution.segmentation_path = find_segmentation_volume_path(resolution.directory)
+        elif normalized.lower().endswith((".nii", ".nii.gz", ".seg.nrrd", ".nrrd")):
             resolution.segmentation_path = normalized
             resolution.directory = os.path.dirname(normalized)
             resolution.annotations_path = os.path.join(resolution.directory, EXPORT_ANNOTATIONS_FILENAME)
@@ -91,16 +113,18 @@ def resolve_import_paths(path: str) -> ImportResolution:
     if not resolution.has_annotations_file and resolution.has_segmentation_file:
         resolution.warnings.append(
             f"{EXPORT_ANNOTATIONS_FILENAME} was not found. "
-            f"Only {EXPORT_SEGMENTATION_FILENAME} will be imported."
+            f"Only {os.path.basename(resolution.segmentation_path)} will be imported."
         )
     elif resolution.has_annotations_file and not resolution.has_segmentation_file:
         resolution.warnings.append(
-            f"{EXPORT_SEGMENTATION_FILENAME} was not found. "
-            "Classification and ROI annotations will be imported without segmentation."
+            f"Neither {EXPORT_SEGMENTATION_SEG_NRRD_FILENAME}, "
+            f"{EXPORT_SEGMENTATION_FILENAME}, nor {EXPORT_SEGMENTATION_NRRD_FILENAME} "
+            "was found. Classification and ROI annotations will be imported without segmentation."
         )
     elif not resolution.has_annotations_file and not resolution.has_segmentation_file:
         resolution.errors.append(
-            f"No {EXPORT_ANNOTATIONS_FILENAME} or {EXPORT_SEGMENTATION_FILENAME} "
+            f"No {EXPORT_ANNOTATIONS_FILENAME}, {EXPORT_SEGMENTATION_SEG_NRRD_FILENAME}, "
+            f"{EXPORT_SEGMENTATION_FILENAME}, or {EXPORT_SEGMENTATION_NRRD_FILENAME} "
             f"found at {normalized}."
         )
 
@@ -1105,7 +1129,10 @@ class AnnotationRecord:
 
     @classmethod
     def segmentation_volume_path_for_annotation_file(cls, annotation_filepath: str) -> str:
-        """Return the sibling segmentation NIfTI path for an exported annotations.json."""
+        """Return the sibling segmentation volume path for an exported annotations.json."""
+        existing = find_segmentation_volume_path(os.path.dirname(annotation_filepath))
+        if existing:
+            return existing
         return os.path.join(
             os.path.dirname(annotation_filepath),
             EXPORT_SEGMENTATION_FILENAME,
@@ -1269,26 +1296,27 @@ def build_record_from_import(
         record = AnnotationRecord(label_config=fallback_label_config)
 
     if resolution.has_segmentation_file:
+        export_format = segmentation_export_format_for_path(resolution.segmentation_path)
         if record.segmentation is None or not record.segmentation.export_filepath:
             record.segmentation = SegmentationData(
                 export_filepath=resolution.segmentation_path,
-                export_format="nifti",
+                export_format=export_format,
             )
     elif (
         record.segmentation is not None
         and record.segmentation.export_filepath
         and not os.path.isfile(record.segmentation.export_filepath)
     ):
-        sibling = (
-            AnnotationRecord.segmentation_volume_path_for_annotation_file(
+        sibling = ""
+        if resolution.directory:
+            sibling = find_segmentation_volume_path(resolution.directory)
+        elif resolution.annotations_path:
+            sibling = AnnotationRecord.segmentation_volume_path_for_annotation_file(
                 resolution.annotations_path
             )
-            if resolution.annotations_path
-            else ""
-        )
         if sibling and os.path.isfile(sibling):
             record.segmentation.export_filepath = sibling
-            record.segmentation.export_format = "nifti"
+            record.segmentation.export_format = segmentation_export_format_for_path(sibling)
 
     if record.label_config is None and fallback_label_config is not None:
         record.label_config = fallback_label_config
