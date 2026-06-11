@@ -9,10 +9,14 @@ Use this format when creating a JSON preset for the **Label Configuration** scre
    - choose a saved preset from the **Presets** dropdown (if any exist), or
    - click **Import from JSON** and select a `.json` file from anywhere on disk.
 3. Confirm when prompted — loading a preset or import **replaces** all labels currently shown in the three category tables.
-4. Review the loaded labels, then click **Save as Preset** if the configuration is not already saved in the `presets/` folder.
-5. Click **Confirm & Start Annotation** only after the current tables match a saved preset on disk.
+4. Review the loaded labels.
+5. Click **Confirm & Start Annotation** when the configuration is ready:
+   - **Loaded preset** from the dropdown: continue immediately if you have not edited the labels.
+   - **Manual labels** or **Import from JSON**: click **Save as Preset** first (unique name required).
+   - **Imported annotation package**: click **Save as Preset** before continuing, even if a temporary import preset was created automatically.
+   - **Modified loaded preset**: save your changes as a preset before continuing.
 
-To save labels you created manually, click **Save as Preset**, enter a **unique preset name** (required), and the configuration is written as JSON into the extension's `presets/` folder beside the module. Saved presets then appear in the dropdown automatically.
+To save labels you created manually or imported from JSON, click **Save as Preset**, enter a **unique preset name** (required), and the configuration is written as JSON into the extension's `presets/` folder beside the module. Saved presets then appear in the dropdown automatically.
 
 **Delete Preset** removes the selected preset JSON from disk (with confirmation). **Clear Labels** in each category section removes only that category's rows. **Clear Everything** removes all labels from all three tables. Destructive actions always prompt for confirmation.
 
@@ -28,7 +32,7 @@ The file is a single JSON object with **three arrays**, one per label category:
 | `roi_categories` | `roi_labels` | Categories for drawn regions of interest |
 | `segment_labels` | `segmentation_classes` | Voxel-level segment names for the segmentation tab |
 
-Each array contains zero or more **label objects**. At least **one label total** across all three arrays is required before you can start annotation, and the configuration must be saved as a preset that matches the current tables.
+Each array contains zero or more **label objects**. At least **one label total** across all three arrays is required before you can start annotation. Manually created and imported configurations must be saved as a preset before continuing; an unmodified preset loaded from the dropdown is already considered saved.
 
 ---
 
