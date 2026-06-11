@@ -956,17 +956,7 @@ class ROITab(qt.QWidget):
         return curve
 
     def _sync_roi_from_node(self, roi, node):
-        if roi is None or node is None:
-            return
-        points = []
-        for i in range(node.GetNumberOfControlPoints()):
-            pos = [0.0, 0.0, 0.0]
-            node.GetNthControlPointPosition(i, pos)
-            points.append({"x": pos[0], "y": pos[1], "z": pos[2]})
-        roi.control_points = points
-        self._apply_geometry_metadata(roi, node)
-        self._update_table()
-        self._sync_to_record()
+        self._sync_roi_geometry_from_node(roi, node, update_ui=True)
 
     def _ensure_extend_observers(self, node):
         for event in (
@@ -1107,16 +1097,170 @@ class ROITab(qt.QWidget):
             roi.category_id = label_def.id
             roi.category_description = label_def.description
 
+    def _extract_markup_control_points(self, node):
+        """Return markup control points as [{x,y,z}, ...] in RAS."""
+        points = []
+        for i in range(node.GetNumberOfControlPoints()):
+            pos = [0.0, 0.0, 0.0]
+            node.GetNthControlPointPosition(i, pos)
+            points.append({"x": pos[0], "y": pos[1], "z": pos[2]})
+        if not points and hasattr(node, "GetXYZ"):
+            try:
+                center = [0.0, 0.0, 0.0]
+                node.GetXYZ(center)
+                points.append({"x": center[0], "y": center[1], "z": center[2]})
+            except Exception:
+                pass
+        return points
+
+    def _extract_box_size_from_node(self, node):
+        """Return (radii, bounding_box_dimensions) from a 3D ROI markup node."""
+        if node is None:
+            return [], []
+
+        self._sync_roi_geometry(node)
+
+        for method_name in ("GetSizeWorld", "GetSize"):
+            try:
+                method = getattr(node, method_name, None)
+                if not callable(method):
+                    continue
+                size = [0.0, 0.0, 0.0]
+                method(size)
+                if sum(1 for s in size if float(s) > 1e-3) >= 2:
+                    dimensions = [float(s) for s in size[:3]]
+                    radii = [d / 2.0 for d in dimensions]
+                    return radii, dimensions
+            except Exception:
+                pass
+
+        if hasattr(node, "GetRadiusXYZ"):
+            try:
+                radius = [0.0, 0.0, 0.0]
+                node.GetRadiusXYZ(radius)
+                if sum(1 for r in radius if float(r) > 1e-3) >= 2:
+                    radii = [float(r) for r in radius[:3]]
+                    dimensions = [r * 2.0 for r in radii]
+                    return radii, dimensions
+            except Exception:
+                pass
+
+        for bounds_method in ("GetRASBounds", "GetBounds"):
+            try:
+                method = getattr(node, bounds_method, None)
+                if not callable(method):
+                    continue
+                bounds = [0.0] * 6
+                method(bounds)
+                dimensions = [
+                    abs(bounds[1] - bounds[0]),
+                    abs(bounds[3] - bounds[2]),
+                    abs(bounds[5] - bounds[4]),
+                ]
+                if sum(1 for d in dimensions if d > 1e-3) >= 2:
+                    radii = [d / 2.0 for d in dimensions]
+                    return radii, dimensions
+            except Exception:
+                pass
+
+        return [], []
+
+    def _apply_box_roi_size_and_orientation(self, roi, node):
+        """Populate radii, orientation, and bounding box dimensions from a 3D ROI node."""
+        radii, dimensions = self._extract_box_size_from_node(node)
+        if radii:
+            roi.radii = radii
+        if dimensions:
+            roi.bounding_box_dimensions = dimensions
+
+        if hasattr(node, "GetObjectToWorldMatrix"):
+            try:
+                import vtk
+                matrix = vtk.vtkMatrix4x4()
+                node.GetObjectToWorldMatrix(matrix)
+                roi.orientation = [
+                    matrix.GetElement(row, col) for row in range(3) for col in range(3)
+                ]
+            except Exception:
+                pass
+
     def _apply_geometry_metadata(self, roi, node):
         roi.mrml_node_name = node.GetName() if node else ""
         roi.number_of_control_points = len(roi.control_points)
-        if roi.control_points:
+
+        center = None
+        if node and hasattr(node, "GetCenter"):
+            try:
+                center = [0.0, 0.0, 0.0]
+                node.GetCenter(center)
+                center = list(center)
+            except Exception:
+                center = None
+        if center is None and node and hasattr(node, "GetXYZ"):
+            try:
+                center = [0.0, 0.0, 0.0]
+                node.GetXYZ(center)
+                center = list(center)
+            except Exception:
+                center = None
+        if center is None and roi.control_points:
             first = roi.control_points[0]
-            roi.center_ras = [first.get("x", 0.0), first.get("y", 0.0), first.get("z", 0.0)]
+            center = [first.get("x", 0.0), first.get("y", 0.0), first.get("z", 0.0)]
+
+        if center is not None:
+            roi.center_ras = center
             if self._volume_node:
                 roi.center_voxel_ijk = ras_to_voxel_ijk(self._volume_node, roi.center_ras)
+
         if roi.radii:
             roi.bounding_box_dimensions = [float(r) * 2.0 for r in roi.radii[:3]]
+
+    def _sync_roi_geometry_from_node(self, roi, node, update_ui=False):
+        """Refresh an ROIAnnotation from its live MRML markup node."""
+        if roi is None or node is None:
+            return
+
+        if roi.roi_type in PLANE_RECTANGLE_TOOL_IDS:
+            self._sync_plane_geometry(node)
+            self._apply_plane_geometry_metadata(roi, node)
+        elif roi.roi_type in RECTANGLE_TOOL_IDS:
+            self._sync_roi_geometry(node, roi.roi_type)
+            roi.control_points = self._extract_markup_control_points(node)
+            self._apply_box_roi_size_and_orientation(roi, node)
+            self._apply_geometry_metadata(roi, node)
+        else:
+            roi.control_points = self._extract_markup_control_points(node)
+            self._apply_geometry_metadata(roi, node)
+
+        if update_ui:
+            self._update_table()
+            self._sync_to_record()
+
+        roi.normalize_geometry_fields()
+
+    def _flush_all_roi_geometry(self):
+        """Re-read geometry from MRML nodes before export or draft save."""
+        for roi in self._roi_annotations:
+            if not roi.mrml_node_id:
+                roi.normalize_geometry_fields()
+                continue
+            try:
+                node = slicer.mrmlScene.GetNodeByID(roi.mrml_node_id)
+            except Exception:
+                node = None
+            if node:
+                self._sync_roi_geometry_from_node(roi, node)
+            else:
+                roi.normalize_geometry_fields()
+
+            missing = roi.missing_reconstruction_fields()
+            if missing:
+                logger.warning(
+                    "ROI %s (%s) missing reconstruction fields: %s",
+                    roi.id,
+                    roi.roi_type or "unknown",
+                    ", ".join(missing),
+                )
 
     def _finalize_roi(self, node, tool_id):
         """Extract geometry from a placed markup node and register it as an ROIAnnotation."""
@@ -1134,48 +1278,7 @@ class ROITab(qt.QWidget):
         self._apply_slice_context(roi, slice_info)
         self._apply_category_metadata(roi)
 
-        if tool_id in PLANE_RECTANGLE_TOOL_IDS:
-            self._apply_plane_geometry_metadata(roi, node)
-        else:
-            # Extract control points
-            points = []
-            for i in range(node.GetNumberOfControlPoints()):
-                pos = [0.0, 0.0, 0.0]
-                node.GetNthControlPointPosition(i, pos)
-                points.append({"x": pos[0], "y": pos[1], "z": pos[2]})
-            if not points and hasattr(node, "GetXYZ"):
-                try:
-                    center = [0.0, 0.0, 0.0]
-                    node.GetXYZ(center)
-                    points.append({"x": center[0], "y": center[1], "z": center[2]})
-                except Exception:
-                    pass
-            roi.control_points = points
-
-            # Extract size/radii for 3D ROI nodes
-            if hasattr(node, "GetSize"):
-                try:
-                    size = [0.0, 0.0, 0.0]
-                    node.GetSize(size)
-                    roi.radii = [size[0] / 2.0, size[1] / 2.0, size[2] / 2.0]
-                except Exception:
-                    pass
-
-            # Extract orientation for 3D ROI nodes
-            if hasattr(node, "GetObjectToWorldMatrix"):
-                try:
-                    import vtk
-                    matrix = vtk.vtkMatrix4x4()
-                    node.GetObjectToWorldMatrix(matrix)
-                    orientation = []
-                    for row in range(3):
-                        for col in range(3):
-                            orientation.append(matrix.GetElement(row, col))
-                    roi.orientation = orientation
-                except Exception:
-                    pass
-
-            self._apply_geometry_metadata(roi, node)
+        self._sync_roi_geometry_from_node(roi, node)
         display_node = node.GetDisplayNode()
         if display_node:
             r, g, b = hex_to_rgb_float(roi.color)
@@ -1194,7 +1297,8 @@ class ROITab(qt.QWidget):
         self._record = record
 
     def get_roi_annotations(self):
-        """Return the list of ROIAnnotation objects."""
+        """Return the list of ROIAnnotation objects with live geometry from MRML nodes."""
+        self._flush_all_roi_geometry()
         return list(self._roi_annotations)
 
     def set_labels(self, labels):
@@ -1545,6 +1649,60 @@ class ROITab(qt.QWidget):
 
     # ─── Create MRML nodes from loaded annotations ──────────────────────
 
+    def _roi_translation_ras(self, roi):
+        """Return the ROI center/origin in RAS for matrix reconstruction."""
+        if roi.center_ras and len(roi.center_ras) == 3:
+            return list(roi.center_ras)
+        if roi.control_points:
+            pt = roi.control_points[0]
+            return [pt.get("x", 0.0), pt.get("y", 0.0), pt.get("z", 0.0)]
+        return None
+
+    def _apply_plane_orientation_from_roi(self, node, roi):
+        if not roi.orientation or len(roi.orientation) != 9:
+            return
+        if not hasattr(node, "SetPlaneToWorldMatrix"):
+            return
+        try:
+            import vtk
+            matrix = vtk.vtkMatrix4x4()
+            for row in range(3):
+                for col in range(3):
+                    matrix.SetElement(row, col, roi.orientation[row * 3 + col])
+            translation = self._roi_translation_ras(roi)
+            if translation:
+                for i in range(3):
+                    matrix.SetElement(i, 3, translation[i])
+            matrix.SetElement(3, 3, 1.0)
+            node.SetPlaneToWorldMatrix(matrix)
+        except Exception:
+            pass
+
+    def _apply_box_orientation_from_roi(self, node, roi):
+        if not roi.orientation or len(roi.orientation) != 9:
+            return
+        if not hasattr(node, "SetObjectToWorldMatrix") and not hasattr(
+            node, "SetAndObserveObjectToWorldMatrix"
+        ):
+            return
+        try:
+            import vtk
+            matrix = vtk.vtkMatrix4x4()
+            for row in range(3):
+                for col in range(3):
+                    matrix.SetElement(row, col, roi.orientation[row * 3 + col])
+            translation = self._roi_translation_ras(roi)
+            if translation:
+                for i in range(3):
+                    matrix.SetElement(i, 3, translation[i])
+            matrix.SetElement(3, 3, 1.0)
+            if hasattr(node, "SetAndObserveObjectToWorldMatrix"):
+                node.SetAndObserveObjectToWorldMatrix(matrix)
+            else:
+                node.SetObjectToWorldMatrix(matrix)
+        except Exception:
+            pass
+
     def _create_node_from_roi(self, roi):
         """Create a Slicer markup node from an ROIAnnotation (for loading saved data)."""
         roi_type = roi.roi_type
@@ -1592,13 +1750,40 @@ class ROITab(qt.QWidget):
             self._configure_plane_node(node)
 
         if class_name == "vtkMRMLMarkupsPlaneNode":
-            if roi.center_ras and len(roi.center_ras) == 3 and hasattr(node, "SetCenter"):
-                try:
-                    node.SetCenter(roi.center_ras[0], roi.center_ras[1], roi.center_ras[2])
-                except Exception:
-                    pass
-            placement_points = roi.control_points[:1] if roi.center_ras else roi.control_points[:3]
-            for pt in placement_points:
+            if len(roi.control_points) >= 4:
+                for pt in roi.control_points[:4]:
+                    node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
+            elif roi.center_ras and len(roi.center_ras) == 3:
+                if hasattr(node, "SetCenter"):
+                    try:
+                        node.SetCenter(
+                            roi.center_ras[0], roi.center_ras[1], roi.center_ras[2]
+                        )
+                    except Exception:
+                        pass
+                seed = roi.control_points[:1] if roi.control_points else [roi.center_ras]
+                for pt in seed:
+                    if isinstance(pt, dict):
+                        node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
+                    else:
+                        node.AddControlPoint(pt[0], pt[1], pt[2])
+            else:
+                for pt in roi.control_points:
+                    node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
+        elif class_name == "vtkMRMLMarkupsROINode":
+            translation = self._roi_translation_ras(roi)
+            if translation and not roi.control_points:
+                if hasattr(node, "SetXYZ"):
+                    try:
+                        node.SetXYZ(translation[0], translation[1], translation[2])
+                    except Exception:
+                        pass
+                elif hasattr(node, "SetCenter"):
+                    try:
+                        node.SetCenter(translation[0], translation[1], translation[2])
+                    except Exception:
+                        pass
+            for pt in roi.control_points:
                 node.AddControlPoint(pt.get("x", 0), pt.get("y", 0), pt.get("z", 0))
         else:
             for pt in roi.control_points:
@@ -1622,41 +1807,26 @@ class ROITab(qt.QWidget):
                     node.SetSize(float(roi.radii[0]) * 2.0, float(roi.radii[1]) * 2.0)
                 except Exception:
                     pass
+            self._apply_plane_orientation_from_roi(node, roi)
             self._sync_plane_geometry(node)
 
-        if class_name == "vtkMRMLMarkupsROINode" and roi.radii and hasattr(node, "SetSize"):
+        if class_name == "vtkMRMLMarkupsROINode" and (
+            roi.radii or roi.bounding_box_dimensions
+        ) and hasattr(node, "SetSize"):
             try:
-                size = [roi.radii[0] * 2, roi.radii[1] * 2, 0.0]
-                if len(roi.radii) > 2:
-                    size[2] = roi.radii[2] * 2
+                if roi.bounding_box_dimensions:
+                    size = [float(roi.bounding_box_dimensions[0]), float(roi.bounding_box_dimensions[1]), 0.0]
+                    if len(roi.bounding_box_dimensions) > 2:
+                        size[2] = float(roi.bounding_box_dimensions[2])
+                else:
+                    size = [roi.radii[0] * 2, roi.radii[1] * 2, 0.0]
+                    if len(roi.radii) > 2:
+                        size[2] = roi.radii[2] * 2
                 node.SetSize(size)
             except Exception:
                 pass
 
-            if roi.orientation and len(roi.orientation) == 9 and hasattr(node, "SetObjectToWorldMatrix"):
-                try:
-                    import vtk
-                    matrix = vtk.vtkMatrix4x4()
-                    for row in range(3):
-                        for col in range(3):
-                            matrix.SetElement(row, col, roi.orientation[row * 3 + col])
-                    if roi.control_points:
-                        pt = roi.control_points[0]
-                        matrix.SetElement(0, 3, pt.get("x", 0))
-                        matrix.SetElement(1, 3, pt.get("y", 0))
-                        matrix.SetElement(2, 3, pt.get("z", 0))
-                    elif hasattr(node, "GetXYZ"):
-                        center = [0.0, 0.0, 0.0]
-                        node.GetXYZ(center)
-                        for i in range(3):
-                            matrix.SetElement(i, 3, center[i])
-                    if hasattr(node, "SetAndObserveObjectToWorldMatrix"):
-                        node.SetAndObserveObjectToWorldMatrix(matrix)
-                    else:
-                        node.SetObjectToWorldMatrix(matrix)
-                except Exception:
-                    pass
-
+            self._apply_box_orientation_from_roi(node, roi)
             self._sync_roi_geometry(node)
 
         # Set color

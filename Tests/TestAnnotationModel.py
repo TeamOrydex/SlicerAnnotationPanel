@@ -393,6 +393,135 @@ class TestROIAnnotation(unittest.TestCase):
         self.assertEqual(len(restored.control_points), 3)
         self.assertEqual(restored.mrml_node_id, "")
 
+    def test_rectangle_3d_exports_box_geometry_without_control_points(self):
+        roi = ROIAnnotation(
+            roi_type="rectangle_3d",
+            label="Lesion",
+            slice_view="Axial",
+            slice_index=12,
+            control_points=[],
+            radii=[25.0, 15.0, 10.0],
+            bounding_box_dimensions=[50.0, 30.0, 20.0],
+            center_ras=[10.0, 20.0, 30.0],
+            center_voxel_ijk=[100, 110, 12],
+            orientation=[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        )
+        exported = roi.to_dict()
+        self.assertEqual(exported["control_points_ras"], [])
+        self.assertEqual(exported["radii"], [25.0, 15.0, 10.0])
+        self.assertEqual(exported["bounding_box_dimensions"], [50.0, 30.0, 20.0])
+        self.assertEqual(exported["center_ras"], [10.0, 20.0, 30.0])
+        self.assertEqual(len(exported["orientation"]), 9)
+
+        restored = ROIAnnotation.from_dict(exported)
+        self.assertEqual(restored.radii, [25.0, 15.0, 10.0])
+        self.assertEqual(restored.center_ras, [10.0, 20.0, 30.0])
+
+    def test_all_roi_tool_types_export_geometry(self):
+        cases = [
+            (
+                "rectangle_2d",
+                ROIAnnotation(
+                    roi_type="rectangle_2d",
+                    control_points=[{"x": 0, "y": 0, "z": 0}, {"x": 1, "y": 0, "z": 0},
+                                    {"x": 1, "y": 1, "z": 0}, {"x": 0, "y": 1, "z": 0}],
+                    bounding_box_dimensions=[1.0, 1.0, 0.0],
+                ),
+                lambda d: len(d["control_points_ras"]) >= 4 or bool(d["bounding_box_dimensions"]),
+            ),
+            (
+                "rectangle_3d",
+                ROIAnnotation(
+                    roi_type="rectangle_3d",
+                    radii=[5.0, 4.0, 3.0],
+                    center_ras=[1.0, 2.0, 3.0],
+                ),
+                lambda d: bool(d["radii"]) and len(d["center_ras"]) == 3,
+            ),
+            (
+                "polygon",
+                ROIAnnotation(
+                    roi_type="polygon",
+                    control_points=[{"x": 0, "y": 0, "z": 0}, {"x": 1, "y": 1, "z": 0},
+                                    {"x": 2, "y": 0, "z": 0}],
+                ),
+                lambda d: len(d["control_points_ras"]) >= 3,
+            ),
+            (
+                "freehand_curve",
+                ROIAnnotation(
+                    roi_type="freehand_curve",
+                    control_points=[{"x": 0, "y": 0, "z": 0}, {"x": 1, "y": 1, "z": 0}],
+                ),
+                lambda d: len(d["control_points_ras"]) >= 2,
+            ),
+            (
+                "line",
+                ROIAnnotation(
+                    roi_type="line",
+                    control_points=[{"x": 0, "y": 0, "z": 0}, {"x": 5, "y": 5, "z": 0}],
+                ),
+                lambda d: len(d["control_points_ras"]) >= 2,
+            ),
+        ]
+        for tool_id, roi, check in cases:
+            exported = roi.to_dict()
+            self.assertTrue(check(exported), f"{tool_id} export missing geometry: {exported}")
+
+    def test_normalize_geometry_fields_derives_radii_and_dimensions(self):
+        roi = ROIAnnotation(
+            roi_type="rectangle_3d",
+            radii=[10.0, 5.0, 2.0],
+            control_points=[],
+        )
+        roi.normalize_geometry_fields()
+        self.assertEqual(roi.bounding_box_dimensions, [20.0, 10.0, 4.0])
+        self.assertEqual(roi.number_of_control_points, 0)
+
+        roi2 = ROIAnnotation(
+            roi_type="rectangle_2d",
+            bounding_box_dimensions=[8.0, 6.0, 0.0],
+        )
+        roi2.normalize_geometry_fields()
+        self.assertEqual(roi2.radii, [4.0, 3.0, 0.0])
+
+    def test_missing_reconstruction_fields_by_type(self):
+        self.assertIn(
+            "control_points_ras",
+            ROIAnnotation(roi_type="line", control_points=[]).missing_reconstruction_fields(),
+        )
+        self.assertEqual(
+            ROIAnnotation(
+                roi_type="line",
+                control_points=[{"x": 0, "y": 0, "z": 0}, {"x": 1, "y": 1, "z": 0}],
+            ).missing_reconstruction_fields(),
+            [],
+        )
+        self.assertEqual(
+            ROIAnnotation(
+                roi_type="rectangle_3d",
+                center_ras=[1.0, 2.0, 3.0],
+                radii=[5.0, 4.0, 3.0],
+            ).missing_reconstruction_fields(),
+            [],
+        )
+        self.assertTrue(
+            ROIAnnotation(
+                roi_type="rectangle_2d",
+                control_points=[
+                    {"x": 0, "y": 0, "z": 0},
+                    {"x": 1, "y": 0, "z": 0},
+                    {"x": 1, "y": 1, "z": 0},
+                    {"x": 0, "y": 1, "z": 0},
+                ],
+            ).has_reconstruction_geometry()
+        )
+
+    def test_transform_handles_enabled_round_trip(self):
+        roi = ROIAnnotation(roi_type="polygon", transform_handles_enabled=True)
+        restored = ROIAnnotation.from_dict(roi.to_dict())
+        self.assertTrue(restored.transform_handles_enabled)
+
 
 class TestSegmentSpatialMetadata(unittest.TestCase):
     def test_segment_spatial_extent_round_trip(self):

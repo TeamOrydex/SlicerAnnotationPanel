@@ -227,6 +227,14 @@ class TestHarnessModuleWidget(ScriptedLoadableModuleWidget):
         ]
         assert "Normal" in class_label_names, "Expected 'Normal' in class_labels"
         assert len(data["rois"]) >= 2, "Expected at least 2 ROIs"
+        from AnnotationModel import ROIAnnotation
+
+        for roi_entry in data.get("regions_of_interest", data.get("rois", [])):
+            roi = ROIAnnotation.from_dict(roi_entry)
+            missing = roi.missing_reconstruction_fields()
+            assert not missing, (
+                f"ROI {roi.roi_type} ({roi.label}) missing reconstruction fields: {missing}"
+            )
         assert data["scan"] is not None, "Expected scan metadata"
 
         slicer.util.infoDisplay(
