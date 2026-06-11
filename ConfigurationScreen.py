@@ -3,7 +3,7 @@ import qt
 import json
 
 from AnnotationModel import LabelDefinition, LabelConfig
-from LabelColors import next_available_color, normalize_hex_color, DEFAULT_LABEL_COLOR
+from LabelColors import get_category_palette, next_available_color, normalize_hex_color, DEFAULT_LABEL_COLOR
 from RadiologyTerms import (
     DEFAULT_ROI_DRAWING_TOOL,
     ROI_DRAWING_TOOLS,
@@ -25,10 +25,11 @@ from PresetStorage import (
 class LabelCategoryWidget(qt.QGroupBox):
     """Reusable group-box that manages a table of label definitions for one category."""
 
-    def __init__(self, title, subtitle, parent=None, include_drawing_tool=False):
+    def __init__(self, title, subtitle, parent=None, include_drawing_tool=False, category_key="classification"):
         super().__init__(title, parent)
         self._subtitle = subtitle
         self._include_drawing_tool = include_drawing_tool
+        self._category_key = category_key
 
         layout = qt.QVBoxLayout()
         self.setLayout(layout)
@@ -133,7 +134,10 @@ class LabelCategoryWidget(qt.QGroupBox):
         return colors
 
     def _pick_default_color(self):
-        return next_available_color(self._get_used_colors())
+        return next_available_color(
+            self._get_used_colors(),
+            palette=get_category_palette(self._category_key),
+        )
 
     def _insert_row(self, name, color, description, label_id="", drawing_tool=""):
         color = normalize_hex_color(color) or self._pick_default_color()
@@ -404,8 +408,8 @@ class ConfigurationScreen(qt.QWidget):
 
         content = qt.QWidget()
         self._content_layout = qt.QVBoxLayout()
-        self._content_layout.setSpacing(12)
-        self._content_layout.setContentsMargins(12, 12, 12, 12)
+        self._content_layout.setSpacing(8)
+        self._content_layout.setContentsMargins(6, 6, 6, 6)
         content.setLayout(self._content_layout)
         scroll.setWidget(content)
 
@@ -423,6 +427,8 @@ class ConfigurationScreen(qt.QWidget):
         # ------ Preset bar ------
         preset_group = qt.QGroupBox("Presets")
         preset_layout = qt.QHBoxLayout()
+        preset_layout.setContentsMargins(6, 4, 6, 4)
+        preset_layout.setSpacing(6)
         preset_group.setLayout(preset_layout)
 
         self._preset_combo = qt.QComboBox()
@@ -442,6 +448,7 @@ class ConfigurationScreen(qt.QWidget):
         self._class_section = LabelCategoryWidget(
             "Classification Labels",
             "Slice-level classification labels (e.g. Normal / Abnormal).",
+            category_key="classification",
         )
         self._content_layout.addWidget(self._class_section)
 
@@ -449,21 +456,23 @@ class ConfigurationScreen(qt.QWidget):
             "ROI Categories",
             "Categories for regions of interest drawn on image slices.",
             include_drawing_tool=True,
+            category_key="roi",
         )
         self._content_layout.addWidget(self._roi_section)
 
         self._seg_section = LabelCategoryWidget(
             "Segment Labels",
             "Voxel-level segment labels for segmentation.",
+            category_key="segmentation",
         )
         self._content_layout.addWidget(self._seg_section)
 
         # ------ Confirm button ------
         self._confirm_btn = qt.QPushButton("Confirm && Start Annotation")
-        self._confirm_btn.setMinimumHeight(42)
+        self._confirm_btn.setMinimumHeight(32)
         self._confirm_btn.setStyleSheet(
-            "QPushButton { background-color: #1976D2; color: white; font-size: 15px;"
-            " font-weight: bold; border: none; border-radius: 6px; padding: 8px 24px; }"
+            "QPushButton { background-color: #1976D2; color: white; font-size: 14px;"
+            " font-weight: bold; border: none; border-radius: 4px; padding: 4px 16px; }"
             " QPushButton:hover { background-color: #1565C0; }"
             " QPushButton:pressed { background-color: #0D47A1; }"
         )
