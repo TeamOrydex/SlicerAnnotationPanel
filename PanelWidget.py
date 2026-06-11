@@ -20,6 +20,7 @@ from AnnotationModel import (
 from LabelColors import normalize_hex_color
 from RadiologyTerms import drawing_tool_display_name
 from PresetStorage import preset_name_key, save_preset_overwrite
+from SliceInfo import find_preferred_volume_node, install_slice_tracking
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
 from SegmentationTab import SegmentationTab
@@ -28,22 +29,25 @@ from ConfigurationScreen import ConfigurationScreen
 
 class AnnotationPanelRootWidget(qt.QWidget):
     """
-    Root panel widget: scan upload, configuration screen, tab bar, action bar.
+    Root panel widget: configuration screen, optional image series, tab bar, action bar.
     Manages a single AnnotationRecord and coordinates annotation workflow.
 
     Flow:
       1. Configuration screen shown (define labels)
-      2. Scan upload (always visible)
-      3. Once both config and scan are ready, annotation tabs become interactive
+      2. Annotation tabs become available immediately after configuration
+      3. Image series are optional and enhance export metadata when present
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._record = AnnotationRecord()
         self._active_volume_node = None
+        self._scene_observers = []
         self._label_config = None  # LabelConfig, set after config is confirmed
         self._active_preset_name = None
         self._setup_ui()
+        self._install_scene_observers()
+        self._sync_detected_volume()
         self._update_readiness()
 
     # ─── UI Setup ────────────────────────────────────────────────────────
@@ -59,28 +63,17 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._scan_group = qt.QGroupBox("Image Series")
         scan_layout = qt.QVBoxLayout(self._scan_group)
 
-        # No-scan state
         self._no_scan_widget = qt.QWidget()
         no_scan_layout = qt.QVBoxLayout(self._no_scan_widget)
         no_scan_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._no_scan_label = qt.QLabel("No series loaded. Load an image series to begin annotating.")
+        self._no_scan_label = qt.QLabel(
+            "No series linked. Annotate on the blank workspace, or load an image "
+            "in Slicer to attach series metadata automatically."
+        )
         no_scan_layout.addWidget(self._no_scan_label)
-
-        btn_row = qt.QHBoxLayout()
-        self._load_file_btn = qt.QPushButton("Load Image File")
-        self._load_file_btn.clicked.connect(self._on_load_scan_file)
-        btn_row.addWidget(self._load_file_btn)
-
-        self._load_dicom_btn = qt.QPushButton("Load DICOM Folder")
-        self._load_dicom_btn.clicked.connect(self._on_load_dicom)
-        btn_row.addWidget(self._load_dicom_btn)
-        btn_row.addStretch()
-        no_scan_layout.addLayout(btn_row)
-
         scan_layout.addWidget(self._no_scan_widget)
 
-        # Scan-loaded state
         self._scan_info_widget = qt.QWidget()
         info_layout = qt.QVBoxLayout(self._scan_info_widget)
         info_layout.setContentsMargins(0, 0, 0, 0)
@@ -92,16 +85,12 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._scan_dims_label = qt.QLabel("")
         info_layout.addWidget(self._scan_dims_label)
 
-        change_row = qt.QHBoxLayout()
-        self._change_scan_btn = qt.QPushButton("Change Series")
-        self._change_scan_btn.clicked.connect(self._on_change_scan)
-        change_row.addWidget(self._change_scan_btn)
-
-        self._unload_scan_btn = qt.QPushButton("Unload Series")
-        self._unload_scan_btn.clicked.connect(self._on_unload_scan)
-        change_row.addWidget(self._unload_scan_btn)
-        change_row.addStretch()
-        info_layout.addLayout(change_row)
+        detach_row = qt.QHBoxLayout()
+        self._unload_scan_btn = qt.QPushButton("Detach Series")
+        self._unload_scan_btn.clicked.connect(self._on_detach_scan)
+        detach_row.addWidget(self._unload_scan_btn)
+        detach_row.addStretch()
+        info_layout.addLayout(detach_row)
 
         scan_layout.addWidget(self._scan_info_widget)
         self._scan_info_widget.setVisible(False)
@@ -222,6 +211,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._label_config = config
         self._record.label_config = config
         self._stacked_widget.setCurrentIndex(1)
+        self._initialize_annotation_workspace()
         self._update_readiness()
 
     @staticmethod
@@ -463,6 +453,11 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if volume:
             self._roi_tab.set_volume(volume)
             self._segmentation_tab.set_volume(volume, create_segments=False)
+        elif self._label_config:
+            self._segmentation_tab.initialize_without_volume(
+                self._label_config.segmentation_classes,
+                create_segments=False,
+            )
         if self._label_config:
             self._segmentation_tab.set_labels(
                 self._label_config.segmentation_classes,
@@ -477,117 +472,104 @@ class AnnotationPanelRootWidget(qt.QWidget):
             )
 
     def _update_readiness(self):
-        """Enable tabs when label config exists; scan is optional after import."""
+        """Enable annotation actions once label configuration is ready."""
         config_ready = self._label_config is not None
-        has_scan = self._active_volume_node is not None
-        has_annotations = self._has_any_annotations()
         self._tab_widget.setEnabled(config_ready)
         self._import_btn.setEnabled(True)
-        self._save_draft_btn.setEnabled(config_ready and (has_scan or has_annotations))
-        self._export_btn.setEnabled(config_ready and (has_scan or has_annotations))
+        self._save_draft_btn.setEnabled(config_ready)
+        self._export_btn.setEnabled(config_ready)
 
-    # ─── Scan Upload ─────────────────────────────────────────────────────
-
-    def _on_load_scan_file(self):
-        filepath = qt.QFileDialog.getOpenFileName(
-            self, "Load Image File", "",
-            "All Supported (*.nrrd *.nii *.nii.gz *.mha *.mhd);;"
-            "NRRD (*.nrrd);;NIfTI (*.nii *.nii.gz);;"
-            "MetaImage (*.mha *.mhd);;All Files (*)"
-        )
-        if not filepath:
+    def _initialize_annotation_workspace(self):
+        """Prepare tabs for standalone annotation; link any detected series."""
+        install_slice_tracking()
+        self._sync_detected_volume()
+        if self._active_volume_node:
             return
-        self._load_volume_from_file(filepath)
 
-    def _on_load_dicom(self):
-        dicom_folder = qt.QFileDialog.getExistingDirectory(
-            self, "Select DICOM Folder"
-        )
-        if not dicom_folder:
+        self._class_label_tab.set_volume(None)
+        if self._label_config:
+            self._segmentation_tab.initialize_without_volume(
+                self._label_config.segmentation_classes,
+                create_segments=True,
+            )
+
+    def _install_scene_observers(self):
+        """Detect volumes loaded through standard Slicer workflows."""
+        scene = slicer.mrmlScene
+        if scene is None:
             return
-        try:
-            from DICOMLib import DICOMUtils
-            loaded_ids = DICOMUtils.loadDICOMDirectory(dicom_folder)
-            if loaded_ids:
-                volume_node = slicer.mrmlScene.GetNodeByID(loaded_ids[0])
-                if volume_node:
-                    self._on_scan_loaded(volume_node, dicom_folder)
-                    return
-            qt.QMessageBox.critical(
-                self, "DICOM Load Failed",
-                "No volumes could be loaded from the selected DICOM folder."
-            )
-        except Exception as e:
-            qt.QMessageBox.critical(
-                self, "DICOM Load Failed", f"Error loading DICOM: {e}"
-            )
 
-    def _load_volume_from_file(self, filepath):
-        try:
-            volume_node = slicer.util.loadVolume(filepath)
-            if volume_node:
-                self._on_scan_loaded(volume_node, filepath)
-            else:
-                qt.QMessageBox.critical(
-                    self, "Load Failed", "Could not load the selected file."
-                )
-        except Exception as e:
-            qt.QMessageBox.critical(
-                self, "Load Failed", f"Error loading image series: {e}"
-            )
+        self._remove_scene_observers()
 
-    def _on_scan_loaded(self, volume_node, source_path=""):
+        def _on_scene_changed(caller, event):
+            qt.QTimer.singleShot(0, self._sync_detected_volume)
+
+        for event_id in (scene.NodeAddedEvent, scene.NodeRemovedEvent):
+            tag = scene.AddObserver(event_id, _on_scene_changed)
+            self._scene_observers.append((scene, tag))
+
+    def _remove_scene_observers(self):
+        for subject, tag in self._scene_observers:
+            try:
+                subject.RemoveObserver(tag)
+            except Exception:
+                pass
+        self._scene_observers = []
+
+    def _sync_detected_volume(self):
+        """Attach to a series loaded through standard Slicer workflows."""
+        volume_node = find_preferred_volume_node()
+        if volume_node is None:
+            if self._active_volume_node is not None:
+                self._detach_volume()
+            return
+
+        if (
+            self._active_volume_node is not None
+            and self._active_volume_node.GetID() == volume_node.GetID()
+        ):
+            self._record.scan = self._build_scan_metadata(volume_node, "")
+            self._set_scan_state(loaded=True)
+            return
+
+        self._bind_volume(volume_node, source_path="")
+
+    def _bind_volume(self, volume_node, source_path=""):
+        """Link tabs to a detected series and capture optional scan metadata."""
+        if volume_node is None:
+            return
+
         self._active_volume_node = volume_node
-
-        slicer.util.setSliceViewerLayers(background=volume_node)
-        slicer.util.resetSliceViews()
-
         self._record.scan = self._build_scan_metadata(volume_node, source_path)
-
         self._class_label_tab.set_volume(volume_node)
         self._roi_tab.set_volume(volume_node)
-        self._segmentation_tab.set_volume(volume_node)
+
+        if self._segmentation_tab.has_segmentation_workspace():
+            self._segmentation_tab.bind_volume_reference(volume_node)
+        elif self._label_config:
+            self._segmentation_tab.set_volume(
+                volume_node,
+                create_segments=True,
+            )
+        else:
+            self._segmentation_tab.set_volume(volume_node, create_segments=False)
 
         self._set_scan_state(loaded=True)
         self._update_readiness()
 
-    def _on_scan_unloaded(self):
-        self._class_label_tab.clear_and_unbind()
-        self._roi_tab.clear_and_unbind()
-        self._segmentation_tab.clear_and_unbind()
-
-        if self._active_volume_node:
-            try:
-                slicer.mrmlScene.RemoveNode(self._active_volume_node)
-            except Exception:
-                pass
+    def _detach_volume(self):
+        """Unlink the panel from the active series without clearing annotations."""
         self._active_volume_node = None
         self._record.scan = None
-        slicer.util.resetSliceViews()
+        self._class_label_tab.set_volume(None)
+        self._roi_tab.set_volume(None)
+        if self._segmentation_tab.has_segmentation_workspace():
+            self._segmentation_tab.detach_volume_reference()
         self._set_scan_state(loaded=False)
         self._update_readiness()
 
-    def _on_change_scan(self):
-        if not self._confirm_clear():
-            return
-        self._on_scan_unloaded()
-        self._on_load_scan_file()
-
-    def _on_unload_scan(self):
-        if not self._confirm_clear():
-            return
-        self._on_scan_unloaded()
-
-    def _confirm_clear(self):
-        result = qt.QMessageBox.warning(
-            self, "Change Series",
-            "Changing the series will clear ALL annotations "
-            "(classification labels, ROIs, and segmentations). "
-            "Make sure you have exported your work.\n\nContinue?",
-            qt.QMessageBox.Yes | qt.QMessageBox.No,
-            qt.QMessageBox.No,
-        )
-        return result == qt.QMessageBox.Yes
+    def _on_detach_scan(self):
+        self._detach_volume()
 
     def _set_scan_state(self, loaded):
         self._no_scan_widget.setVisible(not loaded)
@@ -595,7 +577,9 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         if loaded and self._active_volume_node:
             name = self._active_volume_node.GetName()
-            self._scan_name_label.setText(f"\u2713 Series loaded: {name}")
+            self._scan_name_label.setText(
+                f"\u2713 Series linked: {name} (detected in Slicer)"
+            )
 
             image_data = self._active_volume_node.GetImageData()
             if image_data:
@@ -758,6 +742,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._stacked_widget.setCurrentIndex(1)
 
         self.set_record(record)
+        self._sync_detected_volume()
 
         imported_parts = []
         if record.class_labels:
@@ -803,6 +788,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def cleanup(self):
         """Clean up observers when the panel is destroyed."""
+        self._remove_scene_observers()
         self._roi_tab.cleanup()
         self._segmentation_tab.cleanup()
 
@@ -837,7 +823,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if not has_labels and not has_rois and not has_seg:
             qt.QMessageBox.warning(
                 self, "Nothing to Export",
-                "No annotations to export. Annotate the series first."
+                "No annotations to export. Create annotations first."
             )
             return
 
