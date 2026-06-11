@@ -26,18 +26,19 @@ AnnotationPanel/
 ## Workflow
 
 The panel works as a standalone annotation tool. Configure labels on the
-configuration screen, **save the configuration as a preset**, then continue to
-the annotation workspace for classification, ROI, and segmentation work. A
-loaded image series is optional.
+configuration screen, then continue to the annotation workspace for
+classification, ROI, and segmentation work. A loaded image series is optional.
 
 ```text
-Open Extension → Configure Labels → Save Preset → Annotate → Import / Export
+Open Extension → Configure Labels → (Save Preset if needed) → Annotate → Import / Export
 ```
 
 On the configuration screen you can manage presets (save, load, delete),
-clear labels per category or all at once, and import JSON from disk. You must
-save a preset that matches the current tables before **Confirm & Start
-Annotation** is allowed.
+clear labels per category or all at once, and import JSON from disk. You can
+**Confirm & Start Annotation** immediately after loading an unmodified preset
+from the dropdown. Manually created labels, JSON imports, and imported
+annotation packages require **Save as Preset** first; modified loaded presets
+must be saved again before continuing.
 
 Load images through Slicer's built-in tools (Data module, drag-and-drop, DICOM).
 When a series is present in the scene, the panel links it automatically for export

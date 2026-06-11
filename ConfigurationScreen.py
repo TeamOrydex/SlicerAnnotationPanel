@@ -3,6 +3,12 @@ import qt
 import json
 
 from AnnotationModel import LabelDefinition, LabelConfig
+from ConfigurationValidation import (
+    CONFIG_SOURCE_IMPORTED,
+    CONFIG_SOURCE_MANUAL,
+    CONFIG_SOURCE_PRESET,
+    configuration_continue_blocked_reason,
+)
 from LabelColors import get_category_palette, next_available_color, normalize_hex_color, DEFAULT_LABEL_COLOR
 from RadiologyTerms import (
     DEFAULT_ROI_DRAWING_TOOL,
@@ -12,7 +18,6 @@ from RadiologyTerms import (
 )
 from PresetStorage import (
     delete_preset,
-    find_preset_name,
     get_presets_dir,
     is_preset_name_taken,
     list_preset_names,
@@ -84,6 +89,7 @@ class LabelCategoryWidget(qt.QGroupBox):
         layout.addLayout(btn_row)
 
         self._clear_handler = None
+        self._change_handler = None
 
     @property
     def _actions_col(self):
@@ -139,9 +145,18 @@ class LabelCategoryWidget(qt.QGroupBox):
         """Register a callback invoked when the user clicks Clear Labels."""
         self._clear_handler = handler
 
+    def set_change_handler(self, handler):
+        """Register a callback invoked when label rows are added, edited, or removed."""
+        self._change_handler = handler
+
+    def _notify_configuration_changed(self):
+        if self._change_handler:
+            self._change_handler()
+
     def clear_labels(self):
         """Remove every label row from this category table."""
         self._table.setRowCount(0)
+        self._notify_configuration_changed()
 
     def _on_clear_labels_clicked(self):
         if self._clear_handler:
@@ -274,6 +289,7 @@ class LabelCategoryWidget(qt.QGroupBox):
         if not self._validate_name(name):
             return
         self._insert_row(name, color, description, drawing_tool=drawing_tool)
+        self._notify_configuration_changed()
 
     def _edit_label(self, row):
         if row < 0 or row >= self._table.rowCount:
@@ -308,6 +324,7 @@ class LabelCategoryWidget(qt.QGroupBox):
             drawing_tool = normalize_drawing_tool(drawing_tool) or DEFAULT_ROI_DRAWING_TOOL
             tool_item.setText(drawing_tool_display_name(drawing_tool))
             tool_item.setData(qt.Qt.UserRole, drawing_tool)
+        self._notify_configuration_changed()
 
     def _delete_label(self, row):
         if row < 0 or row >= self._table.rowCount:
@@ -323,6 +340,7 @@ class LabelCategoryWidget(qt.QGroupBox):
             return
         self._table.removeRow(row)
         self._refresh_action_connections()
+        self._notify_configuration_changed()
 
     # ------------------------------------------------------------------
     # Dialog
@@ -426,6 +444,8 @@ class ConfigurationScreen(qt.QWidget):
         self._on_confirm_callback = None
         self._preset_changed_callback = None
         self._current_preset_name = None
+        self._config_source = CONFIG_SOURCE_MANUAL
+        self._config_dirty = False
 
         outer_layout = qt.QVBoxLayout()
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -541,6 +561,9 @@ class ConfigurationScreen(qt.QWidget):
         )
         self._content_layout.addWidget(self._seg_section)
 
+        for section in (self._class_section, self._roi_section, self._seg_section):
+            section.set_change_handler(self._on_label_configuration_changed)
+
         # ------ Confirm button ------
         self._confirm_btn = qt.QPushButton("Confirm && Start Annotation")
         self._confirm_btn.setMinimumHeight(32)
@@ -588,6 +611,7 @@ class ConfigurationScreen(qt.QWidget):
         """Load imported label configuration and register it as the active preset."""
         self._load_preset_config(config, preset_name)
         self._refresh_preset_combo(select_name=preset_name)
+        self._set_config_source(CONFIG_SOURCE_IMPORTED, dirty=False)
 
     def set_confirm_callback(self, callback):
         """Register a callback invoked when the user confirms. Receives a LabelConfig."""
@@ -602,6 +626,19 @@ class ConfigurationScreen(qt.QWidget):
 
     def set_current_preset_name(self, preset_name):
         self._current_preset_name = normalize_preset_name(preset_name) or None
+
+    def restore_saved_preset_state(self, preset_name):
+        """Mark the current tables as an unmodified saved preset configuration."""
+        self.set_current_preset_name(preset_name)
+        self._set_config_source(CONFIG_SOURCE_PRESET, dirty=False)
+
+    def _set_config_source(self, source, dirty=False):
+        self._config_source = source
+        self._config_dirty = dirty
+
+    def _on_label_configuration_changed(self):
+        if self._config_source in (CONFIG_SOURCE_PRESET, CONFIG_SOURCE_IMPORTED):
+            self._config_dirty = True
 
     def _load_preset_config(self, config, preset_name):
         """Load label tables and notify when the preset identity changes."""
@@ -635,55 +672,22 @@ class ConfigurationScreen(qt.QWidget):
                 "Please add at least one label in any category before proceeding.",
             )
             return
-        if not self._is_configuration_saved_as_preset():
+        if not self._is_configuration_ready_to_continue():
+            blocked_reason = self._get_continue_blocked_reason()
             qt.QMessageBox.warning(
                 self,
                 "Preset Required",
-                "Please save your configuration as a preset before continuing.",
+                blocked_reason,
             )
             return
         if self._on_confirm_callback:
             self._on_confirm_callback(config)
 
-    @staticmethod
-    def _label_configs_equal(left, right):
-        """True when two LabelConfig instances describe the same label definitions."""
-        categories = [
-            (left.class_labels, right.class_labels, False),
-            (left.roi_labels, right.roi_labels, True),
-            (left.segmentation_classes, right.segmentation_classes, False),
-        ]
-        for left_labels, right_labels, include_drawing_tool in categories:
-            if len(left_labels) != len(right_labels):
-                return False
-            left_by_id = {lbl.id: lbl for lbl in left_labels}
-            right_by_id = {lbl.id: lbl for lbl in right_labels}
-            if set(left_by_id) != set(right_by_id):
-                return False
-            for label_id, left_label in left_by_id.items():
-                right_label = right_by_id[label_id]
-                if left_label.name != right_label.name:
-                    return False
-                if normalize_hex_color(left_label.color) != normalize_hex_color(right_label.color):
-                    return False
-                if left_label.description != right_label.description:
-                    return False
-                if include_drawing_tool and (
-                    left_label.resolved_drawing_tool() != right_label.resolved_drawing_tool()
-                ):
-                    return False
-        return True
+    def _is_configuration_ready_to_continue(self):
+        return self._get_continue_blocked_reason() is None
 
-    def _is_configuration_saved_as_preset(self):
-        """True when the current tables match a preset saved on disk."""
-        preset_name = self._current_preset_name
-        if not preset_name or not find_preset_name(preset_name):
-            return False
-        try:
-            saved_config = LabelConfig.from_dict(load_preset(preset_name))
-        except FileNotFoundError:
-            return False
-        return self._label_configs_equal(self.get_config(), saved_config)
+    def _get_continue_blocked_reason(self):
+        return configuration_continue_blocked_reason(self._config_source, self._config_dirty)
 
     def _clear_category_labels(self, section, message):
         reply = qt.QMessageBox.question(
@@ -708,6 +712,8 @@ class ConfigurationScreen(qt.QWidget):
         self._class_section.clear_labels()
         self._roi_section.clear_labels()
         self._seg_section.clear_labels()
+        self._current_preset_name = None
+        self._set_config_source(CONFIG_SOURCE_MANUAL, dirty=False)
 
     # ------------------------------------------------------------------
     # Presets
@@ -788,6 +794,7 @@ class ConfigurationScreen(qt.QWidget):
             config = LabelConfig.from_dict(data)
             display_name = data.get("preset_name") or preset_name
             self._load_preset_config(config, display_name)
+            self._set_config_source(CONFIG_SOURCE_PRESET, dirty=False)
         except Exception as exc:
             qt.QMessageBox.critical(self, "Error", f"Failed to load preset:\n{exc}")
             self._refresh_preset_combo()
@@ -854,6 +861,7 @@ class ConfigurationScreen(qt.QWidget):
             saved_name = os.path.splitext(os.path.basename(path))[0]
             self._load_preset_config(config, saved_name)
             self._refresh_preset_combo(select_name=saved_name)
+            self._set_config_source(CONFIG_SOURCE_PRESET, dirty=False)
             qt.QMessageBox.information(
                 self,
                 "Saved",
@@ -894,6 +902,7 @@ class ConfigurationScreen(qt.QWidget):
 
         if preset_name_key(self._current_preset_name) == preset_name_key(preset_name):
             self._current_preset_name = None
+            self._set_config_source(CONFIG_SOURCE_MANUAL, dirty=False)
 
         self._refresh_preset_combo()
         self._clear_preset_selection()
@@ -926,5 +935,6 @@ class ConfigurationScreen(qt.QWidget):
             config = LabelConfig.from_dict(data)
             display_name = data.get("preset_name") or os.path.splitext(os.path.basename(path))[0]
             self._load_preset_config(config, display_name)
+            self._set_config_source(CONFIG_SOURCE_IMPORTED, dirty=False)
         except Exception as exc:
             qt.QMessageBox.critical(self, "Error", f"Failed to import preset:\n{exc}")
