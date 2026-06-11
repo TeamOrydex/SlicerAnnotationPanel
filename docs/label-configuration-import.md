@@ -39,6 +39,7 @@ Each entry in an array is an object with these fields:
 | `color` | No | string | Hex color for the label swatch and annotations. Default: `#ff0000`. Use `#RRGGBB` (e.g. `#8B4513`). |
 | `description` | No | string | Optional tooltip / export metadata describing the label. |
 | `id` | No | string | Stable UUID for the label. If omitted, a new UUID is generated on import. |
+| `drawing_tool` | No | string | **ROI categories only.** Internal drawing tool id (`rectangle_2d`, `rectangle_3d`, `polygon`, `freehand_curve`, `line`). Display names such as `Polygon Contour` are also accepted on import. Default when omitted: `rectangle_3d` (Bounding Box). |
 
 ---
 
@@ -62,7 +63,8 @@ Each entry in an array is an object with these fields:
     {
       "name": "Lesion",
       "color": "#e6194b",
-      "description": "Focal lesion region"
+      "description": "Focal lesion region",
+      "drawing_tool": "rectangle_3d"
     }
   ],
   "segment_labels": [
@@ -107,27 +109,32 @@ Example preset with all three label categories populated:
     {
       "name": "Spleen",
       "color": "#8B4513",
-      "description": "Spleen boundary region"
+      "description": "Spleen boundary region",
+      "drawing_tool": "polygon"
     },
     {
       "name": "Lesion",
       "color": "#e6194b",
-      "description": "Focal splenic lesion"
+      "description": "Focal splenic lesion",
+      "drawing_tool": "rectangle_3d"
     },
     {
       "name": "Infarct",
       "color": "#911eb4",
-      "description": "Splenic infarct"
+      "description": "Splenic infarct",
+      "drawing_tool": "polygon"
     },
     {
       "name": "Accessory Spleen",
       "color": "#4363d8",
-      "description": "Accessory splenic tissue"
+      "description": "Accessory splenic tissue",
+      "drawing_tool": "polygon"
     },
     {
       "name": "Artifact",
       "color": "#808080",
-      "description": "Imaging artifact"
+      "description": "Imaging artifact",
+      "drawing_tool": "line"
     }
   ],
   "segment_labels": [
@@ -180,6 +187,7 @@ When you **Save as Preset** from the panel, exports use the preferred keys: `cla
 - **Colors** — Use distinct hex colors within each category so labels are easy to tell apart in the UI. If you add labels manually in the panel, unused palette colors are assigned automatically.
 - **IDs** — Include stable `id` values when you need to round-trip configs or merge with existing annotation exports that reference `label_config_id`.
 - **Empty categories** — Any of the three arrays may be empty `[]` if you do not use that annotation mode, as long as at least one label exists somewhere.
+- **ROI drawing tools** — Each `roi_categories` entry may set `drawing_tool`. Selecting that category in the ROI tab activates the configured tool. Changing a category's drawing tool after annotation removes existing ROIs for that category.
 - **Not a full annotation export** — This file defines **label definitions only**. It does not contain drawn ROIs, painted segments, or classification annotations. Those live in the full annotation JSON export under `label_configuration` inside an annotation record.
 
 ---
