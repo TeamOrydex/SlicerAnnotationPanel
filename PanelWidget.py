@@ -17,6 +17,8 @@ from AnnotationModel import (
     label_configs_differ,
     EXPORT_ANNOTATIONS_FILENAME,
     EXPORT_SEGMENTATION_FILENAME,
+    EXPORT_SEGMENTATION_NRRD_FILENAME,
+    EXPORT_SEGMENTATION_SEG_NRRD_FILENAME,
 )
 from RadiologyTerms import drawing_tool_display_name
 from PresetStorage import preset_name_key, save_preset_overwrite
@@ -778,19 +780,37 @@ class AnnotationPanelRootWidget(qt.QWidget):
         exported_files.append(EXPORT_ANNOTATIONS_FILENAME)
 
         if has_seg:
-            seg_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
-            success = self._segmentation_tab.export_mask_to_file(seg_path, "nifti")
-            if success:
+            nifti_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_NRRD_FILENAME)
+            seg_nrrd_path = os.path.join(export_dir, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME)
+            nifti_ok = self._segmentation_tab.export_mask_to_file(nifti_path, "nifti")
+            nrrd_ok = self._segmentation_tab.export_mask_to_file(nrrd_path, "nrrd")
+            seg_nrrd_ok = self._segmentation_tab.export_segmentation_node_to_file(seg_nrrd_path)
+
+            if nifti_ok:
                 exported_files.append(EXPORT_SEGMENTATION_FILENAME)
-            else:
+            if nrrd_ok:
+                exported_files.append(EXPORT_SEGMENTATION_NRRD_FILENAME)
+            if seg_nrrd_ok:
+                exported_files.append(EXPORT_SEGMENTATION_SEG_NRRD_FILENAME)
+
+            if not nifti_ok or not nrrd_ok or not seg_nrrd_ok:
+                failed_formats = []
+                if not nifti_ok:
+                    failed_formats.append(EXPORT_SEGMENTATION_FILENAME)
+                if not nrrd_ok:
+                    failed_formats.append(EXPORT_SEGMENTATION_NRRD_FILENAME)
+                if not seg_nrrd_ok:
+                    failed_formats.append(EXPORT_SEGMENTATION_SEG_NRRD_FILENAME)
                 error_detail = getattr(
                     self._segmentation_tab, "_last_export_error", ""
                 ) or "Unknown error."
                 qt.QMessageBox.warning(
                     self,
                     "Segmentation Export Failed",
-                    "Classification and ROI annotations were exported, but the "
-                    "segmentation NIfTI volume could not be written.\n\n"
+                    "Classification and ROI annotations were exported, but these "
+                    "segmentation volumes could not be written:\n"
+                    f"  • {', '.join(failed_formats)}\n\n"
                     f"Details: {error_detail}",
                 )
 
