@@ -16,6 +16,21 @@ from SliceInfo import anatomical_slice_index_from_ijk
 from LabelColors import normalize_hex_color
 
 
+def utc_iso_timestamp() -> str:
+    """Return the current UTC time as an ISO 8601 string with a Z suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _created_at_from_import(data) -> str:
+    """Read created_at from import data without synthesizing a new timestamp."""
+    if not isinstance(data, dict) or "created_at" not in data:
+        return ""
+    value = data.get("created_at")
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _resolve_slice_index(plane, data: dict) -> int:
     """Resolve anatomical slice index, including legacy exports that stored physical offset."""
     ijk = list(data.get("voxel_index_ijk", data.get("volume_slice_ijk", [])))
@@ -406,7 +421,7 @@ class ClassLabelAnnotation:
     """A classification label applied with slice context from all three planes."""
     label: str = ""
     plane_slices: List[PlaneSliceContext] = field(default_factory=list)
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(default_factory=utc_iso_timestamp)
     category_id: str = ""
     category_color: str = ""
     category_description: str = ""
@@ -509,7 +524,7 @@ class ClassLabelAnnotation:
         if isinstance(data, cls):
             return data
         if isinstance(data, str):
-            return cls(label=data)
+            return cls(label=data, created_at="")
 
         plane_slices_data = data.get("plane_slices", [])
         if plane_slices_data:
@@ -527,7 +542,7 @@ class ClassLabelAnnotation:
             category_color=data.get("category_color", ""),
             category_description=data.get("category_description", ""),
             plane_slices=plane_slices,
-            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            created_at=_created_at_from_import(data),
         )
         annotation._sync_legacy_fields()
         return annotation
@@ -575,7 +590,7 @@ class ROIAnnotation:
     radii: list = field(default_factory=list)
     orientation: list = field(default_factory=list)
     description: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(default_factory=utc_iso_timestamp)
     mrml_node_id: str = ""
     mrml_node_name: str = ""
     category_id: str = ""
@@ -714,7 +729,7 @@ class ROIAnnotation:
             description=data.get("description", ""),
             mrml_node_id=data.get("mrml_node_id", ""),
             mrml_node_name=data.get("mrml_node_name", ""),
-            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            created_at=_created_at_from_import(data),
         )
 
 
@@ -844,6 +859,7 @@ class SegmentLabel:
     segment_id: str = ""
     description: str = ""
     label_config_id: str = ""
+    created_at: str = field(default_factory=utc_iso_timestamp)
     voxel_count: int = 0
     spatial_extent: Optional[SegmentSpatialExtent] = None
     modification_events: List[SegmentModificationEvent] = field(default_factory=list)
@@ -858,6 +874,7 @@ class SegmentLabel:
             "segment_id": self.segment_id,
             "description": self.description,
             "label_config_id": self.label_config_id,
+            "created_at": self.created_at,
             "voxel_count": self.voxel_count,
             "last_effect_name": self.last_effect_name,
             "last_effect_parameters": dict(self.last_effect_parameters),
@@ -865,6 +882,18 @@ class SegmentLabel:
         }
         if self.spatial_extent:
             payload["spatial_extent"] = self.spatial_extent.to_dict()
+        return payload
+
+    def to_export_dict(self) -> dict:
+        """Serialize lightweight segment metadata for formal export."""
+        payload = {
+            "id": self.id,
+            "name": self.name,
+            "segment_id": self.segment_id,
+            "label_config_id": self.label_config_id,
+        }
+        if self.created_at:
+            payload["created_at"] = self.created_at
         return payload
 
     @classmethod
@@ -878,6 +907,7 @@ class SegmentLabel:
             segment_id=data.get("segment_id", ""),
             description=data.get("description", ""),
             label_config_id=data.get("label_config_id", ""),
+            created_at=_created_at_from_import(data),
             voxel_count=int(data.get("voxel_count", 0) or 0),
             spatial_extent=SegmentSpatialExtent.from_dict(spatial) if spatial else None,
             modification_events=[SegmentModificationEvent.from_dict(e) for e in events],
@@ -900,6 +930,13 @@ class SegmentationData:
     label_to_segment_map: Dict[str, str] = field(default_factory=dict)
     modification_events: List[SegmentModificationEvent] = field(default_factory=list)
     editor_state_at_export: dict = field(default_factory=dict)
+
+    def to_export_metadata_dict(self) -> dict:
+        """Serialize lightweight segmentation metadata for formal export."""
+        return {
+            "segments": [lbl.to_export_dict() for lbl in self.labels],
+            "label_to_segment_map": dict(self.label_to_segment_map),
+        }
 
     def to_dict(self) -> dict:
         return {
@@ -1047,7 +1084,7 @@ class AnnotationRecord:
     study_id: str = ""
     series_id: str = ""
     created_by: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(default_factory=utc_iso_timestamp)
 
     label_config: Optional[LabelConfig] = None
     scan: Optional[ScanMetadata] = None
@@ -1103,7 +1140,7 @@ class AnnotationRecord:
             study_id=data.get("study_id", ""),
             series_id=data.get("series_id", ""),
             created_by=data.get("created_by", ""),
-            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            created_at=_created_at_from_import(data),
             label_config=label_config,
             scan=scan,
             class_labels=class_labels,
@@ -1112,9 +1149,12 @@ class AnnotationRecord:
         )
 
     def to_export_dict(self) -> dict:
-        """Serialize for formal export: classification and ROI in JSON, not segmentation."""
+        """Serialize for formal export with lightweight segmentation metadata."""
         payload = self.to_dict()
-        payload.pop("segmentation", None)
+        if self.segmentation:
+            payload["segmentation"] = self.segmentation.to_export_metadata_dict()
+        else:
+            payload.pop("segmentation", None)
         return payload
 
     def to_json(self, indent=2) -> str:

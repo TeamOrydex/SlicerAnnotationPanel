@@ -18,6 +18,7 @@ from AnnotationModel import (
     reconcile_imported_record, derive_import_preset_name,
     label_configs_differ,
     segment_label_def_for_label_value,
+    utc_iso_timestamp,
     EXPORT_ANNOTATIONS_FILENAME, EXPORT_SEGMENTATION_FILENAME,
     EXPORT_SEGMENTATION_NRRD_FILENAME, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME,
     find_segmentation_volume_path, segmentation_export_format_for_path,
@@ -127,10 +128,23 @@ class TestToDict(unittest.TestCase):
         self.assertIsNotNone(d["segmentation"])
         self.assertEqual(d["segmentation"]["segments"][0]["name"], "Tumor")
 
-    def test_to_export_dict_omits_segmentation(self):
+    def test_to_export_dict_includes_trimmed_segmentation_metadata(self):
+        created_at = "2026-06-11T15:48:09Z"
         seg = SegmentationData(
-            labels=[SegmentLabel(name="Tumor", color="#ff0000", segment_id="Segment_1")],
+            labels=[
+                SegmentLabel(
+                    name="Tumor",
+                    color="#ff0000",
+                    segment_id="Segment_1",
+                    label_config_id="seg-1",
+                    created_at=created_at,
+                    modification_events=[
+                        SegmentModificationEvent(effect_name="Paint", segment_id="Segment_1")
+                    ],
+                )
+            ],
             total_voxel_count=5000,
+            label_to_segment_map={"seg-1": "Segment_1"},
         )
         record = AnnotationRecord(
             class_labels=["Normal"],
@@ -138,24 +152,46 @@ class TestToDict(unittest.TestCase):
             segmentation=seg,
         )
         export_payload = record.to_export_dict()
-        self.assertNotIn("segmentation", export_payload)
+        self.assertIn("segmentation", export_payload)
         self.assertEqual(len(export_payload["classification_labels"]), 1)
         self.assertEqual(len(export_payload["regions_of_interest"]), 1)
+        exported_segment = export_payload["segmentation"]["segments"][0]
+        self.assertEqual(exported_segment["created_at"], created_at)
+        self.assertNotIn("modification_events", exported_segment)
         self.assertIn("segmentation", record.to_dict())
 
-    def test_to_export_json_round_trip_without_segmentation(self):
+    def test_to_export_json_round_trip_preserves_segmentation_metadata(self):
+        created_at = "2026-06-11T15:48:09Z"
         record = AnnotationRecord(
             study_id="EXPORT-1",
-            class_labels=["Normal"],
-            rois=[ROIAnnotation(roi_type="line", control_points=[{"x": 1, "y": 2, "z": 3}])],
+            class_labels=[ClassLabelAnnotation(label="Normal", created_at="2026-06-11T15:42:31Z")],
+            rois=[
+                ROIAnnotation(
+                    roi_type="line",
+                    control_points=[{"x": 1, "y": 2, "z": 3}],
+                    created_at="2026-06-11T15:45:12Z",
+                )
+            ],
             segmentation=SegmentationData(
-                labels=[SegmentLabel(name="Tumor", color="#ff0000")],
+                labels=[
+                    SegmentLabel(
+                        name="Tumor",
+                        color="#ff0000",
+                        segment_id="Segment_1",
+                        label_config_id="seg-1",
+                        created_at=created_at,
+                    )
+                ],
+                label_to_segment_map={"seg-1": "Segment_1"},
             ),
         )
         restored = AnnotationRecord.from_dict(json.loads(record.to_export_json()))
-        self.assertIsNone(restored.segmentation)
+        self.assertIsNotNone(restored.segmentation)
         self.assertEqual(restored.study_id, "EXPORT-1")
         self.assertEqual(restored.class_labels[0].label, "Normal")
+        self.assertEqual(restored.class_labels[0].created_at, "2026-06-11T15:42:31Z")
+        self.assertEqual(restored.rois[0].created_at, "2026-06-11T15:45:12Z")
+        self.assertEqual(restored.segmentation.labels[0].created_at, created_at)
         self.assertEqual(len(restored.rois), 1)
 
     def test_to_dict_with_scan(self):
@@ -1820,6 +1856,92 @@ class TestBackwardCompatibility(unittest.TestCase):
         record = AnnotationRecord.from_dict(export_data)
         self.assertIsNone(record.segmentation)
         self.assertEqual(record.class_labels[0].label, "Normal")
+
+
+class TestAnnotationCreatedAt(unittest.TestCase):
+    def test_utc_iso_timestamp_uses_z_suffix(self):
+        timestamp = utc_iso_timestamp()
+        self.assertTrue(timestamp.endswith("Z"))
+        self.assertRegex(timestamp, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_new_annotations_receive_created_at(self):
+        class_label = ClassLabelAnnotation(label="Tumor")
+        roi = ROIAnnotation(roi_type="rectangle_3d", label="Tumor")
+        segment = SegmentLabel(name="Liver", segment_id="Liver")
+
+        for annotation in (class_label, roi, segment):
+            self.assertTrue(annotation.created_at.endswith("Z"))
+
+    def test_import_without_created_at_does_not_generate_timestamp(self):
+        class_label = ClassLabelAnnotation.from_dict({"label": "Tumor"})
+        roi = ROIAnnotation.from_dict({"geometry_type_id": "line", "category": "Tumor"})
+        segment = SegmentLabel.from_dict({"name": "Liver", "segment_id": "Liver"})
+        record = AnnotationRecord.from_dict({"id": "import-1"})
+
+        self.assertEqual(class_label.created_at, "")
+        self.assertEqual(roi.created_at, "")
+        self.assertEqual(segment.created_at, "")
+        self.assertEqual(record.created_at, "")
+
+    def test_import_preserves_created_at(self):
+        created_at = "2026-06-11T15:42:31Z"
+        class_label = ClassLabelAnnotation.from_dict(
+            {"category": "Tumor", "created_at": created_at}
+        )
+        roi = ROIAnnotation.from_dict(
+            {"geometry_type_id": "line", "category": "Tumor", "created_at": created_at}
+        )
+        segment = SegmentLabel.from_dict(
+            {"name": "Liver", "segment_id": "Liver", "created_at": created_at}
+        )
+
+        self.assertEqual(class_label.created_at, created_at)
+        self.assertEqual(roi.created_at, created_at)
+        self.assertEqual(segment.created_at, created_at)
+
+    def test_legacy_string_class_label_import_has_no_created_at(self):
+        annotation = ClassLabelAnnotation.from_dict("Normal")
+        self.assertEqual(annotation.label, "Normal")
+        self.assertEqual(annotation.created_at, "")
+
+    def test_edit_does_not_change_created_at(self):
+        created_at = "2026-06-11T15:42:31Z"
+        class_label = ClassLabelAnnotation(label="Tumor", created_at=created_at)
+        roi = ROIAnnotation(roi_type="line", label="Tumor", created_at=created_at)
+        segment = SegmentLabel(name="Liver", segment_id="Liver", created_at=created_at)
+
+        class_label.label = "Benign"
+        roi.label = "Benign"
+        roi.control_points = [{"x": 1.0, "y": 2.0, "z": 3.0}]
+        segment.name = "Kidney"
+        segment.voxel_count = 42
+
+        self.assertEqual(class_label.created_at, created_at)
+        self.assertEqual(roi.created_at, created_at)
+        self.assertEqual(segment.created_at, created_at)
+
+    def test_export_includes_created_at_for_all_annotation_types(self):
+        created_at = "2026-06-11T15:42:31Z"
+        record = AnnotationRecord(
+            class_labels=[ClassLabelAnnotation(label="Tumor", created_at=created_at)],
+            rois=[ROIAnnotation(roi_type="line", label="Tumor", created_at=created_at)],
+            segmentation=SegmentationData(
+                labels=[
+                    SegmentLabel(
+                        name="Liver",
+                        segment_id="Liver",
+                        label_config_id="seg-1",
+                        created_at=created_at,
+                    )
+                ],
+                label_to_segment_map={"seg-1": "Liver"},
+            ),
+        )
+
+        payload = record.to_export_dict()
+        self.assertEqual(payload["classification_labels"][0]["created_at"], created_at)
+        self.assertEqual(payload["regions_of_interest"][0]["created_at"], created_at)
+        self.assertEqual(payload["segmentation"]["segments"][0]["created_at"], created_at)
 
 
 class TestConfigurationContinueValidation(unittest.TestCase):
