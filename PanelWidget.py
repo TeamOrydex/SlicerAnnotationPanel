@@ -5,9 +5,9 @@ import slicer
 
 from AnnotationModel import (
     AnnotationRecord,
-    ScanMetadata,
-    LabelConfig,
     ClassLabelAnnotation,
+    LabelConfig,
+    ScanMetadata,
     SegmentationData,
     derive_export_folder_name,
     resolve_unique_export_subdirectory,
@@ -17,6 +17,8 @@ from AnnotationModel import (
     EXPORT_ANNOTATIONS_FILENAME,
     EXPORT_SEGMENTATION_FILENAME,
 )
+from LabelColors import normalize_hex_color
+from RadiologyTerms import drawing_tool_display_name
 from PresetStorage import preset_name_key, save_preset_overwrite
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
@@ -191,6 +193,21 @@ class AnnotationPanelRootWidget(qt.QWidget):
         new_preset = self._config_screen.get_current_preset_name()
         preset_changed = preset_name_key(new_preset) != preset_name_key(self._active_preset_name)
 
+        if self._should_warn_roi_deletion_on_config_confirm(
+            self._label_config, config, preset_changed
+        ):
+            reply = qt.QMessageBox.warning(
+                self,
+                "Confirm Configuration",
+                "You have modified label names, colors, or drawing tools.\n\n"
+                "Confirming will delete existing ROI annotations so they stay "
+                "consistent with the updated configuration.\n\nContinue?",
+                qt.QMessageBox.Yes | qt.QMessageBox.No,
+                qt.QMessageBox.No,
+            )
+            if reply != qt.QMessageBox.Yes:
+                return
+
         if preset_changed:
             self._clear_all_annotations(notify=False)
             self._push_labels_to_tabs(config, old_config=None)
@@ -206,6 +223,41 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._record.label_config = config
         self._stacked_widget.setCurrentIndex(1)
         self._update_readiness()
+
+    @staticmethod
+    def _label_config_modified(old_config, new_config):
+        """True when any label name, color, or ROI drawing tool differs."""
+        categories = [
+            (old_config.class_labels, new_config.class_labels, False),
+            (old_config.roi_labels, new_config.roi_labels, True),
+            (old_config.segmentation_classes, new_config.segmentation_classes, False),
+        ]
+        for old_labels, new_labels, include_drawing_tool in categories:
+            old_by_id = {lbl.id: lbl for lbl in old_labels}
+            new_by_id = {lbl.id: lbl for lbl in new_labels}
+            if set(old_by_id) != set(new_by_id):
+                return True
+            for label_id, old_label in old_by_id.items():
+                new_label = new_by_id[label_id]
+                if old_label.name != new_label.name:
+                    return True
+                if normalize_hex_color(old_label.color) != normalize_hex_color(new_label.color):
+                    return True
+                if include_drawing_tool and (
+                    old_label.resolved_drawing_tool() != new_label.resolved_drawing_tool()
+                ):
+                    return True
+        return False
+
+    def _should_warn_roi_deletion_on_config_confirm(
+        self, old_config, new_config, preset_changed
+    ):
+        """Warn before confirm when label edits will remove existing ROI annotations."""
+        if old_config is None or not self._record.rois:
+            return False
+        if preset_changed:
+            return True
+        return self._label_config_modified(old_config, new_config)
 
     def _on_config_preset_changed(self, new_name, old_name):
         """Clear annotations when a different preset is loaded on the config screen."""
@@ -314,27 +366,44 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         kept = []
         deleted = []
+        tool_changed = []
         for roi in self._record.rois:
-            old_id = next(
-                (lid for lid, lbl in old_by_id.items() if lbl.name == roi.label),
-                None,
-            )
+            old_id = roi.category_id if roi.category_id in old_by_id else None
+            if not old_id:
+                old_id = next(
+                    (lid for lid, lbl in old_by_id.items() if lbl.name == roi.label),
+                    None,
+                )
             if old_id and old_id not in new_by_id:
                 deleted.append(f"{roi.roi_type} ({roi.label})")
                 continue
             if old_id and old_id in new_by_id:
+                old_def = old_by_id[old_id]
                 new_def = new_by_id[old_id]
+                if new_def.drawing_tool_changed_from(old_def):
+                    tool_changed.append(
+                        f"{new_def.name}: "
+                        f"{drawing_tool_display_name(old_def.resolved_drawing_tool())} "
+                        f"→ {drawing_tool_display_name(new_def.resolved_drawing_tool())}"
+                    )
+                    continue
                 roi.label = new_def.name
                 roi.color = new_def.color
             kept.append(roi)
 
         self._record.rois = kept
+        messages = []
         if deleted:
-            qt.QMessageBox.information(
-                self, "ROIs Deleted",
-                "ROIs using deleted labels were removed:\n" +
-                "\n".join(deleted)
+            messages.append(
+                "ROIs using deleted labels were removed:\n" + "\n".join(deleted)
             )
+        if tool_changed:
+            messages.append(
+                "ROIs were removed because the configured drawing tool changed:\n"
+                + "\n".join(tool_changed)
+            )
+        if messages:
+            qt.QMessageBox.information(self, "ROIs Deleted", "\n\n".join(messages))
 
     def _handle_seg_class_changes(self, old_labels, new_labels):
         """Delete segmentation metadata for removed classes and warn the user."""

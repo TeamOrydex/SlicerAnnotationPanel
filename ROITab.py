@@ -8,9 +8,17 @@ import slicer
 import logging
 from datetime import datetime, timezone
 
-from AnnotationModel import ROIAnnotation
+from AnnotationModel import ROIAnnotation, roi_matches_label_definition
 from SliceInfo import capture_slice_info, get_active_slice_view, ras_to_voxel_ijk
-from RadiologyTerms import roi_geometry_type_export, plane_to_slice_view, slice_view_to_plane
+from RadiologyTerms import (
+    DEFAULT_ROI_DRAWING_TOOL,
+    ROI_DRAWING_TOOLS,
+    drawing_tool_display_name,
+    normalize_drawing_tool,
+    plane_to_slice_view,
+    roi_geometry_type_export,
+    slice_view_to_plane,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,15 +104,7 @@ class ROITab(qt.QWidget):
         self._tool_group.setExclusive(False)
 
         self._tool_buttons = {}
-        tool_names = [
-            ("rectangle_2d", "Bounding Box 2D"),
-            ("rectangle_3d", "Bounding Box"),
-            ("polygon", "Polygon Contour"),
-            ("freehand_curve", "Freehand Contour"),
-            ("line", "Linear Measurement"),
-        ]
-
-        for tool_id, display_name in tool_names:
+        for tool_id, display_name in ROI_DRAWING_TOOLS:
             btn = qt.QPushButton(display_name)
             btn.setCheckable(True)
             btn.setProperty("tool_id", tool_id)
@@ -151,6 +151,14 @@ class ROITab(qt.QWidget):
         row2.addWidget(self._color_swatch)
         row2.addStretch()
         label_layout.addLayout(row2)
+
+        row3 = qt.QHBoxLayout()
+        row3.addWidget(qt.QLabel("Drawing tool:"))
+        self._drawing_tool_label = qt.QLabel("")
+        self._drawing_tool_label.setStyleSheet("font-weight: bold;")
+        row3.addWidget(self._drawing_tool_label)
+        row3.addStretch()
+        label_layout.addLayout(row3)
 
         parent_layout.addWidget(label_frame)
 
@@ -208,10 +216,82 @@ class ROITab(qt.QWidget):
                 self._tool_buttons[tool_id].setToolTip("Not available in this Slicer version")
                 logger.warning(f"Markup class {class_name} not available for tool '{tool_id}'")
 
+        self._update_tool_button_locks()
+
+    # ─── Label drawing tool association ──────────────────────────────────
+
+    def _resolved_label_drawing_tool(self, label_def=None):
+        if label_def is None:
+            label_def = self._selected_label_definition()
+        if not label_def:
+            return None
+        tool_id = label_def.resolved_drawing_tool()
+        if self._available_tools.get(tool_id, False):
+            return tool_id
+        for candidate_id, _display_name in ROI_DRAWING_TOOLS:
+            if self._available_tools.get(candidate_id, False):
+                return candidate_id
+        return None
+
+    def _allowed_drawing_tools(self):
+        allowed = set()
+        label_tool = self._resolved_label_drawing_tool()
+        if label_tool:
+            allowed.add(label_tool)
+        if self._extend_mode_active and self._extend_roi:
+            allowed.add(self._extend_roi.roi_type)
+        return allowed
+
+    def _update_tool_button_locks(self):
+        allowed = self._allowed_drawing_tools()
+        lock_active = bool(self._selected_label_definition())
+        unavailable_tip = "Not available in this Slicer version"
+        for tool_id, btn in self._tool_buttons.items():
+            available = self._available_tools.get(tool_id, False)
+            if not lock_active:
+                btn.setEnabled(available)
+                btn.setToolTip("" if available else unavailable_tip)
+                continue
+            if tool_id in allowed:
+                btn.setEnabled(available)
+                btn.setToolTip("" if available else unavailable_tip)
+            else:
+                btn.setEnabled(False)
+                if btn.isChecked():
+                    btn.blockSignals(True)
+                    btn.setChecked(False)
+                    btn.blockSignals(False)
+                label_tool = self._resolved_label_drawing_tool()
+                category_name = self._get_selected_label() or "category"
+                btn.setToolTip(
+                    f'"{category_name}" uses {drawing_tool_display_name(label_tool)}'
+                )
+
+    def _sync_label_drawing_tool(self, activate=False):
+        tool_id = self._resolved_label_drawing_tool()
+        if tool_id:
+            self._drawing_tool_label.setText(drawing_tool_display_name(tool_id))
+        else:
+            self._drawing_tool_label.setText("(none)")
+        self._update_tool_button_locks()
+        if not activate or not tool_id or self._extend_mode_active:
+            return
+        self._deactivate_tool()
+        self._select_tool_button(tool_id)
+        self._activate_tool(tool_id)
+
     # ─── Tool Activation ─────────────────────────────────────────────────
 
     def _on_tool_toggled(self, tool_id, checked):
         if checked:
+            allowed = self._allowed_drawing_tools()
+            if self._selected_label_definition() and tool_id not in allowed:
+                btn = self._tool_buttons.get(tool_id)
+                if btn:
+                    btn.blockSignals(True)
+                    btn.setChecked(False)
+                    btn.blockSignals(False)
+                return
             self._deactivate_tool()
             for tid, btn in self._tool_buttons.items():
                 if tid != tool_id:
@@ -865,12 +945,15 @@ class ROITab(qt.QWidget):
 
     # ─── Extend / edit existing ROIs ─────────────────────────────────────
 
-    def _check_tool_button(self, tool_id):
-        btn = self._tool_buttons.get(tool_id)
-        if btn:
+    def _select_tool_button(self, tool_id):
+        """Highlight exactly one drawing tool button."""
+        for tid, btn in self._tool_buttons.items():
             btn.blockSignals(True)
-            btn.setChecked(True)
+            btn.setChecked(tid == tool_id)
             btn.blockSignals(False)
+
+    def _check_tool_button(self, tool_id):
+        self._select_tool_button(tool_id)
 
     def _selected_table_row(self):
         indexes = self._table.selectionModel().selectedRows()
@@ -1058,6 +1141,7 @@ class ROITab(qt.QWidget):
         self._hide_extend_hint()
         self._remove_interaction_observer()
         self._uncheck_all_tools()
+        self._sync_label_drawing_tool(activate=True)
         try:
             interaction_node = slicer.app.applicationLogic().GetInteractionNode()
             interaction_node.SetCurrentInteractionMode(interaction_node.ViewTransform)
@@ -1290,6 +1374,7 @@ class ROITab(qt.QWidget):
         self._roi_annotations.append(roi)
         self._update_table()
         self._sync_to_record()
+        self._sync_label_drawing_tool(activate=True)
 
     # ─── Public API ──────────────────────────────────────────────────────
 
@@ -1312,6 +1397,12 @@ class ROITab(qt.QWidget):
         if self._roi_labels:
             self._current_color = self._roi_labels[0].color
             self._update_color_swatch()
+            if self._label_combo.count > 0:
+                self._label_combo.setCurrentIndex(0)
+                self._on_label_selection_changed(0)
+        else:
+            self._drawing_tool_label.setText("(none)")
+            self._update_tool_button_locks()
 
     def apply_label_config(self, old_labels, new_labels):
         """Update existing ROI annotations and MRML nodes when labels are edited or deleted."""
@@ -1326,21 +1417,32 @@ class ROITab(qt.QWidget):
                 self._remove_roi_node(roi)
                 continue
 
-            for lid, old_lbl in old_by_id.items():
-                if lid not in new_by_id:
-                    continue
+            matched = False
+            for lid in set(old_by_id) & set(new_by_id):
+                old_lbl = old_by_id[lid]
                 new_lbl = new_by_id[lid]
-                if roi.label in (old_lbl.name, new_lbl.name):
-                    roi.label = new_lbl.name
-                    roi.color = new_lbl.color
-                    self._apply_roi_appearance(roi)
+                if not roi_matches_label_definition(roi, old_lbl, new_lbl.name):
+                    continue
+                matched = True
+                if new_lbl.drawing_tool_changed_from(old_lbl):
+                    self._remove_roi_node(roi)
                     break
+                roi.label = new_lbl.name
+                roi.color = new_lbl.color
+                roi.category_id = new_lbl.id
+                roi.category_description = new_lbl.description
+                self._apply_roi_appearance(roi)
+                surviving.append(roi)
+                break
 
-            surviving.append(roi)
+            if not matched:
+                surviving.append(roi)
 
         self._roi_annotations = surviving
         self._update_table()
         self._sync_to_record()
+        if self._roi_labels:
+            self._sync_label_drawing_tool(activate=True)
 
     def _update_color_swatch(self):
         self._color_swatch.setStyleSheet(
@@ -1348,11 +1450,14 @@ class ROITab(qt.QWidget):
         )
 
     def _on_label_selection_changed(self, index):
-        """Auto-set color from the selected label's configured color."""
+        """Auto-set color and activate the configured drawing tool for the category."""
         if 0 <= index < len(self._roi_labels):
             label_def = self._roi_labels[index]
             self._current_color = label_def.color
             self._update_color_swatch()
+            self._sync_label_drawing_tool(activate=True)
+        else:
+            self._sync_label_drawing_tool(activate=False)
 
     def load_rois(self, rois):
         """
@@ -1394,6 +1499,7 @@ class ROITab(qt.QWidget):
         self._finish_extend_mode(sync=True)
         self._deactivate_tool()
         self._uncheck_all_tools()
+        self._sync_label_drawing_tool(activate=True)
 
     def cleanup(self):
         """Remove all observers. Called on tab switch or module unload."""

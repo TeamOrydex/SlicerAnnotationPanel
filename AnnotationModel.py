@@ -5,7 +5,13 @@ import uuid
 import json
 from datetime import datetime, timezone
 
-from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export, roi_geometry_type_from_export
+from RadiologyTerms import (
+    DEFAULT_ROI_DRAWING_TOOL,
+    normalize_drawing_tool,
+    roi_geometry_type_export,
+    roi_geometry_type_from_export,
+    slice_view_to_plane,
+)
 from SliceInfo import anatomical_slice_index_from_ijk
 
 
@@ -159,23 +165,47 @@ class LabelDefinition:
     name: str = ""
     color: str = "#ff0000"
     description: str = ""
+    drawing_tool: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "id": self.id,
             "name": self.name,
             "color": self.color,
             "description": self.description,
         }
+        if self.drawing_tool:
+            payload["drawing_tool"] = self.drawing_tool
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict) -> "LabelDefinition":
+        raw_tool = data.get("drawing_tool")
+        drawing_tool = normalize_drawing_tool(raw_tool) if raw_tool else ""
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             name=data.get("name", ""),
             color=data.get("color", "#ff0000"),
             description=data.get("description", ""),
+            drawing_tool=drawing_tool,
         )
+
+    def resolved_drawing_tool(self) -> str:
+        """Return the configured ROI drawing tool, or the default when unset."""
+        return normalize_drawing_tool(self.drawing_tool) or DEFAULT_ROI_DRAWING_TOOL
+
+    def drawing_tool_changed_from(self, other: "LabelDefinition") -> bool:
+        """True when the configured ROI drawing tool differs from another definition."""
+        return self.resolved_drawing_tool() != other.resolved_drawing_tool()
+
+
+def roi_matches_label_definition(roi, label_def: LabelDefinition, alternate_name: str = "") -> bool:
+    """True when an ROI annotation belongs to the given label definition."""
+    names = {label_def.name}
+    if alternate_name:
+        names.add(alternate_name)
+    category_id = getattr(roi, "category_id", "")
+    return roi.label in names or (label_def.id and category_id == label_def.id)
 
 
 @dataclass

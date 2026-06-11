@@ -21,27 +21,32 @@
     {
       "name": "Spleen",
       "color": "#8B4513",
-      "description": "Spleen boundary region"
+      "description": "Spleen boundary region",
+      "drawing_tool": "polygon"
     },
     {
       "name": "Lesion",
       "color": "#e6194b",
-      "description": "Focal splenic lesion"
+      "description": "Focal splenic lesion",
+      "drawing_tool": "rectangle_3d"
     },
     {
       "name": "Infarct",
       "color": "#911eb4",
-      "description": "Splenic infarct"
+      "description": "Splenic infarct",
+      "drawing_tool": "polygon"
     },
     {
       "name": "Accessory Spleen",
       "color": "#4363d8",
-      "description": "Accessory splenic tissue"
+      "description": "Accessory splenic tissue",
+      "drawing_tool": "polygon"
     },
     {
       "name": "Artifact",
       "color": "#808080",
-      "description": "Imaging artifact"
+      "description": "Imaging artifact",
+      "drawing_tool": "line"
     }
   ],
   "segment_labels": [

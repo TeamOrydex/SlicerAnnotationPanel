@@ -901,7 +901,54 @@ class TestLabelDefinition(unittest.TestCase):
         self.assertEqual(lbl.name, "Minimal")
         self.assertEqual(lbl.color, "#ff0000")
         self.assertEqual(lbl.description, "")
+        self.assertEqual(lbl.drawing_tool, "")
         self.assertTrue(len(lbl.id) > 0)
+
+    def test_drawing_tool_round_trip(self):
+        lbl = LabelDefinition(
+            name="Lesion",
+            color="#e6194b",
+            drawing_tool="rectangle_3d",
+        )
+        restored = LabelDefinition.from_dict(lbl.to_dict())
+        self.assertEqual(restored.drawing_tool, "rectangle_3d")
+
+    def test_to_dict_omits_empty_drawing_tool(self):
+        lbl = LabelDefinition(name="Normal")
+        self.assertNotIn("drawing_tool", lbl.to_dict())
+
+    def test_resolved_drawing_tool_default(self):
+        lbl = LabelDefinition(name="Legacy")
+        self.assertEqual(lbl.resolved_drawing_tool(), "rectangle_3d")
+
+    def test_from_dict_accepts_display_name(self):
+        lbl = LabelDefinition.from_dict(
+            {"name": "Spleen", "drawing_tool": "Polygon Contour"}
+        )
+        self.assertEqual(lbl.drawing_tool, "polygon")
+
+    def test_drawing_tool_changed_from(self):
+        old = LabelDefinition(name="Spleen", drawing_tool="polygon")
+        new = LabelDefinition(id=old.id, name="Spleen", drawing_tool="rectangle_3d")
+        self.assertTrue(new.drawing_tool_changed_from(old))
+        same = LabelDefinition(id=old.id, name="Spleen", drawing_tool="polygon")
+        self.assertFalse(same.drawing_tool_changed_from(old))
+
+
+class TestRoiLabelMatching(unittest.TestCase):
+    def test_roi_matches_label_definition_by_name(self):
+        from AnnotationModel import ROIAnnotation, roi_matches_label_definition
+
+        label = LabelDefinition(name="Spleen", drawing_tool="polygon")
+        roi = ROIAnnotation(label="Spleen", roi_type="polygon")
+        self.assertTrue(roi_matches_label_definition(roi, label))
+
+    def test_roi_matches_label_definition_by_category_id(self):
+        from AnnotationModel import ROIAnnotation, roi_matches_label_definition
+
+        label = LabelDefinition(name="Spleen", drawing_tool="polygon")
+        roi = ROIAnnotation(label="Renamed", category_id=label.id, roi_type="polygon")
+        self.assertTrue(roi_matches_label_definition(roi, label, "Old Spleen"))
 
 
 class TestLabelConfig(unittest.TestCase):
@@ -934,6 +981,27 @@ class TestLabelConfig(unittest.TestCase):
         self.assertEqual(d["roi_categories"][0]["name"], "Tumor")
         self.assertEqual(len(d["segment_labels"]), 1)
         self.assertEqual(d["segment_labels"][0]["name"], "Edema")
+
+    def test_roi_drawing_tool_in_config_round_trip(self):
+        config = LabelConfig(
+            roi_labels=[
+                LabelDefinition(name="Spleen", color="#8b4513", drawing_tool="polygon"),
+                LabelDefinition(name="Lesion", color="#e6194b", drawing_tool="rectangle_3d"),
+            ],
+        )
+        restored = LabelConfig.from_dict(config.to_dict())
+        self.assertEqual(restored.roi_labels[0].drawing_tool, "polygon")
+        self.assertEqual(restored.roi_labels[1].drawing_tool, "rectangle_3d")
+
+    def test_legacy_roi_labels_without_drawing_tool(self):
+        data = {
+            "roi_categories": [
+                {"name": "Tumor", "color": "#e6194b", "description": "Tumor region"},
+            ],
+        }
+        config = LabelConfig.from_dict(data)
+        self.assertEqual(config.roi_labels[0].drawing_tool, "")
+        self.assertEqual(config.roi_labels[0].resolved_drawing_tool(), "rectangle_3d")
 
     def test_from_dict_round_trip(self):
         config = LabelConfig(
