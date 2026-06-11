@@ -39,8 +39,9 @@ same name already exists, a numeric suffix is appended (`_2`, `_3`, ...).
 
 ## annotations.json
 
-Contains classification labels, ROI annotations, label configuration, and
-series metadata. Segmentation voxel data is **not** included in this file.
+Contains classification labels, ROI annotations, label configuration, series
+metadata, and lightweight segmentation metadata. Segmentation voxel data is
+**not** included in this file (see `segmentation.nii.gz`).
 
 Primary keys:
 
@@ -52,9 +53,24 @@ Primary keys:
 | Image series metadata | `series_metadata` |
 | Classification labels | `classification_labels` |
 | Regions of interest | `regions_of_interest` |
+| Segmentation metadata | `segmentation` |
 
 Legacy aliases (`label_config`, `scan`, `class_labels`, `rois`) are still
 written for backward compatibility.
+
+### Creation timestamps
+
+Each annotation type may include a `created_at` field (ISO 8601 UTC, e.g.
+`2026-06-11T15:42:31Z`) recording when the annotation was first created:
+
+| Type | Location | Notes |
+|------|----------|-------|
+| Classification | `classification_labels[].created_at` | Set when the user adds a label |
+| ROI | `regions_of_interest[].created_at` | Set when the shape is finalized |
+| Segmentation | `segmentation.segments[].created_at` | Set when the segment is first created |
+
+`created_at` is not updated by edits (move, resize, rename, or paint). Imported
+timestamps are preserved; older files without `created_at` remain importable.
 
 ## segmentation.nii.gz
 
@@ -64,6 +80,20 @@ do not support direct NIfTI export.
 
 Each segment label value in the volume corresponds to the combined labelmap
 produced from all configured segmentation classes.
+
+### Segmentation metadata in annotations.json
+
+When segmentation annotations exist, formal export also writes a trimmed
+`segmentation` object in `annotations.json`:
+
+| Key | Purpose |
+|-----|---------|
+| `segments` | Per-segment metadata (`id`, `name`, `segment_id`, `label_config_id`, `created_at`) |
+| `label_to_segment_map` | Maps configured label ids to MRML segment ids |
+
+Modification events, spatial extent, and voxel counts are omitted from formal
+export to keep the JSON compact. Full segmentation metadata remains available in
+draft JSON exports.
 
 ## Import behavior
 
@@ -93,8 +123,9 @@ colors, and ROI drawing tools).
 | Source | Restored into |
 |--------|----------------|
 | `label_configuration` | Active preset (saved as `Import-<scan-name>`) and all three label tables when configuration is replaced |
-| `classification_labels` | Classification tab (mapped by `category_id`) |
-| `regions_of_interest` | ROI tab and MRML markup nodes (mapped by `category_id`) |
+| `classification_labels` | Classification tab (mapped by `category_id`; `created_at` preserved) |
+| `regions_of_interest` | ROI tab and MRML markup nodes (mapped by `category_id`; `created_at` preserved) |
+| `segmentation` | Segment `created_at` and `label_to_segment_map` (mapped onto imported MRML segments) |
 | `segmentation.nii.gz` | Segmentation tab (label values mapped to `segment_labels` order) |
 
 `label_configuration` is authoritative: names, colors, and descriptions from the
