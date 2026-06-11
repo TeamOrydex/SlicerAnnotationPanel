@@ -1124,9 +1124,13 @@ class AnnotationRecord:
             segmentation=segmentation,
         )
 
+    _LEGACY_EXPORT_KEYS = ("label_config", "scan", "class_labels", "rois")
+
     def to_export_dict(self) -> dict:
         """Serialize for formal export with lightweight segmentation metadata."""
         payload = self.to_dict()
+        for key in self._LEGACY_EXPORT_KEYS:
+            payload.pop(key, None)
         if self.segmentation:
             payload["segmentation"] = self.segmentation.to_export_metadata_dict()
         else:

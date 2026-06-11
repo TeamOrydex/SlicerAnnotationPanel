@@ -192,6 +192,60 @@ class TestToDict(unittest.TestCase):
         self.assertEqual(restored.segmentation.labels[0].created_at, created_at)
         self.assertEqual(len(restored.rois), 1)
 
+    def _sample_export_record(self):
+        label_config = LabelConfig(
+            class_labels=[LabelDefinition(id="c1", name="Normal", color="#4CAF50")],
+            roi_labels=[LabelDefinition(id="r1", name="Lesion", color="#e6194b")],
+            segmentation_classes=[LabelDefinition(id="s1", name="Tumor", color="#ff0000")],
+        )
+        return AnnotationRecord(
+            study_id="STUDY-1",
+            series_id="SERIES-1",
+            label_config=label_config,
+            scan=ScanMetadata(filename="Patient_123.nii.gz", study_instance_uid="1.2.3"),
+            class_labels=[ClassLabelAnnotation(label="Normal", created_at="2026-06-11T15:42:31Z")],
+            rois=[
+                ROIAnnotation(
+                    roi_type="line",
+                    label="Lesion",
+                    control_points=[{"x": 1, "y": 2, "z": 3}],
+                    created_at="2026-06-11T15:45:12Z",
+                )
+            ],
+            segmentation=SegmentationData(
+                labels=[
+                    SegmentLabel(
+                        name="Tumor",
+                        segment_id="Segment_1",
+                        label_config_id="s1",
+                        created_at="2026-06-11T15:48:09Z",
+                    )
+                ],
+                label_to_segment_map={"s1": "Segment_1"},
+            ),
+        )
+
+    def test_to_export_dict_omits_legacy_top_level_keys(self):
+        record = self._sample_export_record()
+        draft_payload = record.to_dict()
+        export_payload = record.to_export_dict()
+
+        for key in ("label_config", "scan", "class_labels", "rois"):
+            self.assertIn(key, draft_payload)
+            self.assertNotIn(key, export_payload)
+
+        self.assertIn("label_configuration", export_payload)
+        self.assertIn("series_metadata", export_payload)
+        self.assertIn("classification_labels", export_payload)
+        self.assertIn("regions_of_interest", export_payload)
+        self.assertEqual(
+            export_payload["label_configuration"]["classification_labels"][0]["name"],
+            "Normal",
+        )
+        self.assertEqual(export_payload["series_metadata"]["filename"], "Patient_123.nii.gz")
+        self.assertEqual(export_payload["classification_labels"][0]["category"], "Normal")
+        self.assertEqual(export_payload["regions_of_interest"][0]["category"], "Lesion")
+
     def test_to_dict_with_scan(self):
         scan = ScanMetadata(
             filename="brain.nrrd",
@@ -1498,6 +1552,43 @@ class TestImportResolution(unittest.TestCase):
             self.assertIsNotNone(imported.segmentation)
             self.assertEqual(imported.segmentation.export_filepath, nifti_path)
             self.assertEqual(imported.segmentation.export_format, "nifti")
+
+    def test_build_record_from_export_json_without_legacy_keys(self):
+        record = AnnotationRecord(
+            label_config=LabelConfig(
+                class_labels=[LabelDefinition(id="c1", name="Normal", color="#ff0000")],
+                roi_labels=[LabelDefinition(id="r1", name="Lesion", color="#00ff00")],
+                segmentation_classes=[LabelDefinition(id="s1", name="Tumor", color="#0000ff")],
+            ),
+            scan=ScanMetadata(filename="scan.nrrd"),
+            class_labels=[ClassLabelAnnotation(label="Normal")],
+            rois=[ROIAnnotation(roi_type="ellipse", control_points=[{"x": 0, "y": 0, "z": 0}])],
+            segmentation=SegmentationData(
+                labels=[SegmentLabel(name="Tumor", segment_id="Segment_1", label_config_id="s1")],
+                label_to_segment_map={"s1": "Segment_1"},
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write(record.to_export_json())
+
+            with open(json_path, "r", encoding="utf-8") as handle:
+                exported = json.load(handle)
+            for key in ("label_config", "scan", "class_labels", "rois"):
+                self.assertNotIn(key, exported)
+            self.assertIn("label_configuration", exported)
+            self.assertIn("classification_labels", exported)
+            self.assertIn("regions_of_interest", exported)
+
+            resolution = resolve_import_paths(json_path)
+            imported, errors = build_record_from_import(resolution)
+            self.assertEqual(errors, [])
+            self.assertEqual(imported.class_labels[0].label, "Normal")
+            self.assertEqual(len(imported.rois), 1)
+            self.assertEqual(imported.scan.filename, "scan.nrrd")
+            self.assertEqual(len(imported.segmentation.labels), 1)
 
     def test_build_record_segmentation_only_uses_fallback_config(self):
         with tempfile.TemporaryDirectory() as export_dir:
