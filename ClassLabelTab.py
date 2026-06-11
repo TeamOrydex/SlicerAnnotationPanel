@@ -81,7 +81,7 @@ class ClassLabelTab(qt.QWidget):
         self._table = qt.QTableWidget()
         self._table.setColumnCount(7)
         self._table.setHorizontalHeaderLabels(
-            ["#", "Actions", "Label", "Axial Slice", "Coronal Slice", "Sagittal Slice", "Color"]
+            ["#", "Actions", "Label", "Axial", "Coronal", "Sagittal", "Color"]
         )
         header = self._table.horizontalHeader()
         header.setStretchLastSection(False)
