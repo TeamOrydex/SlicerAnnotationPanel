@@ -128,9 +128,10 @@ class ClassLabelTab(qt.QWidget):
         self._selected_label_def = None
         install_slice_tracking()
 
-        columns = self._grid_columns(len(self._labels))
+        display_labels = self._display_order(self._labels)
+        columns = self._grid_columns(len(display_labels))
 
-        for index, label_def in enumerate(self._labels):
+        for index, label_def in enumerate(display_labels):
             btn = qt.QPushButton(label_def.name)
             btn.setCheckable(True)
             btn.setToolTip(label_def.description or label_def.name)
@@ -208,6 +209,11 @@ class ClassLabelTab(qt.QWidget):
         self._refresh_table()
 
     # ─── Internal ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _display_order(labels):
+        """Return labels sorted for UI display only (case-insensitive)."""
+        return sorted(labels, key=lambda label_def: label_def.name.casefold())
 
     @staticmethod
     def _grid_columns(label_count):
