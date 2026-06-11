@@ -1,6 +1,6 @@
 """
 Segmentation tab: pixel-level painting using Slicer's Segment Editor.
-Embeds qMRMLSegmentEditorWidget with export controls and opacity adjustment.
+Embeds qMRMLSegmentEditorWidget with opacity adjustment.
 The source volume and segment classes are set externally by the panel.
 """
 import os
@@ -181,7 +181,6 @@ class SegmentationTab(qt.QWidget):
     def _setup_ui(self):
         layout = qt.QVBoxLayout(self)
         self._build_segment_editor(layout)
-        self._build_export_section(layout)
 
     def _build_segment_editor(self, parent_layout):
         frame = qt.QFrame()
@@ -264,28 +263,6 @@ class SegmentationTab(qt.QWidget):
 
         if not hidden:
             logger.debug("Segment editor navigation button not found to hide")
-
-    def _build_export_section(self, parent_layout):
-        frame = qt.QFrame()
-        frame.setFrameShape(qt.QFrame.StyledPanel)
-        fl = qt.QVBoxLayout(frame)
-
-        self._stats_label = qt.QLabel("Total segmented voxels: 0")
-        fl.addWidget(self._stats_label)
-
-        btn_row = qt.QHBoxLayout()
-        self._export_nrrd_btn = qt.QPushButton("Export Segmentation (NRRD)")
-        self._export_nrrd_btn.clicked.connect(lambda: self._on_export("nrrd"))
-        btn_row.addWidget(self._export_nrrd_btn)
-
-        self._export_nifti_btn = qt.QPushButton("Export Segmentation (NIfTI)")
-        self._export_nifti_btn.clicked.connect(lambda: self._on_export("nifti"))
-        btn_row.addWidget(self._export_nifti_btn)
-
-        btn_row.addStretch()
-        fl.addLayout(btn_row)
-
-        parent_layout.addWidget(frame)
 
     # ─── Volume Binding (called by panel) ────────────────────────────────
 
@@ -375,7 +352,6 @@ class SegmentationTab(qt.QWidget):
         self._remove_segmentation_observer()
         self._remove_segment_editor_observer()
         self._remove_editor_slice_tracking()
-        self._stats_label.setText("Total segmented voxels: 0")
 
     # ─── Label Config (called by panel) ──────────────────────────────────
 
@@ -459,7 +435,6 @@ class SegmentationTab(qt.QWidget):
 
         self._select_first_segment()
         self._reset_modification_snapshots()
-        self._refresh_stats()
         try:
             self._segment_editor_widget.refresh()
         except Exception:
@@ -507,15 +482,6 @@ class SegmentationTab(qt.QWidget):
         except Exception:
             pass
         self._select_first_segment()
-        self._refresh_stats()
-
-    def _refresh_stats(self):
-        """Recompute and display voxel statistics after segment changes."""
-        if self._segmentation_node is None:
-            self._stats_label.setText("Total segmented voxels: 0")
-            return
-        data = SegmentationData()
-        self._compute_stats(data)
 
     def _rebuild_label_segment_map(self, old_labels, new_labels):
         """Match existing MRML segments to config label ids by name."""
@@ -640,27 +606,6 @@ class SegmentationTab(qt.QWidget):
             display_node = self._segmentation_node.GetDisplayNode()
             if display_node:
                 display_node.SetOpacity(value / 100.0)
-
-    # ─── Export ──────────────────────────────────────────────────────────
-
-    def _on_export(self, fmt):
-        if self._segmentation_node is None:
-            qt.QMessageBox.warning(self, "No Segmentation", "No segmentation to export.")
-            return
-
-        if fmt == "nrrd":
-            ext_filter = "NRRD (*.nrrd)"
-        else:
-            ext_filter = "NIfTI (*.nii.gz)"
-
-        filepath = qt.QFileDialog.getSaveFileName(self, "Export Segmentation", "", ext_filter)
-        if not filepath:
-            return
-
-        success = self.export_mask_to_file(filepath, fmt)
-        if success:
-            self._last_export_filepath = filepath
-            self._last_export_format = fmt
 
     def _export_segments_to_labelmap(self, labelmap_node):
         """Export segmentation segments into a labelmap aligned to the source volume."""
@@ -1640,7 +1585,6 @@ class SegmentationTab(qt.QWidget):
                         total += count
 
             data.total_voxel_count = total
-            self._stats_label.setText(f"Total segmented voxels: {total:,}")
         except Exception as e:
             logger.warning(f"Could not compute segment statistics: {e}")
             total = 0
@@ -1651,8 +1595,6 @@ class SegmentationTab(qt.QWidget):
                     per_segment[lbl.segment_id] = {"voxel_count": count}
                     total += count
             data.total_voxel_count = total
-            if total:
-                self._stats_label.setText(f"Total segmented voxels: {total:,}")
         return per_segment, full_stats
 
     def load_segmentation(self, seg_data):
@@ -1741,11 +1683,6 @@ class SegmentationTab(qt.QWidget):
 
         self._select_first_segment()
         self._reset_modification_snapshots()
-
-        if seg_data.total_voxel_count > 0:
-            self._stats_label.setText(f"Total segmented voxels: {seg_data.total_voxel_count:,}")
-        elif self._segmentation_node is not None:
-            self._refresh_stats()
 
         return True
 
