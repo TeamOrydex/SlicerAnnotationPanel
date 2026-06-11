@@ -1433,18 +1433,17 @@ class ROITab(qt.QWidget):
 
     def set_labels(self, labels):
         """Populate the ROI label dropdown from configured labels (LabelDefinition list)."""
+        self._deactivate_tool()
+        self._uncheck_all_tools()
         self._roi_labels = list(labels)
         self._label_combo.blockSignals(True)
         self._label_combo.clear()
         for label_def in self._roi_labels:
             self._label_combo.addItem(label_def.name)
+        self._label_combo.setCurrentIndex(-1)
         self._label_combo.blockSignals(False)
         if self._roi_labels:
-            self._current_color = self._roi_labels[0].color
-            self._update_color_swatch()
-            if self._label_combo.count > 0:
-                self._label_combo.setCurrentIndex(0)
-                self._on_label_selection_changed(0)
+            self._sync_label_drawing_tool(activate=False)
         else:
             self._drawing_tool_label.setText("(none)")
             self._update_tool_button_locks()
@@ -1487,7 +1486,7 @@ class ROITab(qt.QWidget):
         self._update_table()
         self._sync_to_record()
         if self._roi_labels:
-            self._sync_label_drawing_tool(activate=True)
+            self._sync_label_drawing_tool(activate=False)
 
     def _update_color_swatch(self):
         self._color_swatch.setStyleSheet(
