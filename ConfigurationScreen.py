@@ -11,6 +11,8 @@ from RadiologyTerms import (
     normalize_drawing_tool,
 )
 from PresetStorage import (
+    delete_preset,
+    find_preset_name,
     get_presets_dir,
     is_preset_name_taken,
     list_preset_names,
@@ -60,6 +62,7 @@ class LabelCategoryWidget(qt.QGroupBox):
         self._table.setMinimumHeight(120)
         layout.addWidget(self._table)
 
+        btn_row = qt.QHBoxLayout()
         add_btn = qt.QPushButton("+ Add")
         add_btn.setStyleSheet(
             "QPushButton { color: #1976D2; background: transparent; border: 1px dashed #1976D2;"
@@ -67,7 +70,20 @@ class LabelCategoryWidget(qt.QGroupBox):
             " QPushButton:hover { background: #E3F2FD; }"
         )
         add_btn.clicked.connect(self._add_label)
-        layout.addWidget(add_btn)
+        btn_row.addWidget(add_btn)
+
+        self._clear_labels_btn = qt.QPushButton("Clear Labels")
+        self._clear_labels_btn.setStyleSheet(
+            "QPushButton { color: #c62828; background: transparent; border: 1px solid #ef9a9a;"
+            " border-radius: 4px; padding: 4px 12px; }"
+            " QPushButton:hover { background: #FFEBEE; }"
+        )
+        self._clear_labels_btn.clicked.connect(self._on_clear_labels_clicked)
+        btn_row.addWidget(self._clear_labels_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self._clear_handler = None
 
     @property
     def _actions_col(self):
@@ -118,6 +134,20 @@ class LabelCategoryWidget(qt.QGroupBox):
             if self._include_drawing_tool:
                 drawing_tool = lbl.resolved_drawing_tool()
             self._insert_row(lbl.name, lbl.color, lbl.description, lbl.id, drawing_tool)
+
+    def set_clear_handler(self, handler):
+        """Register a callback invoked when the user clicks Clear Labels."""
+        self._clear_handler = handler
+
+    def clear_labels(self):
+        """Remove every label row from this category table."""
+        self._table.setRowCount(0)
+
+    def _on_clear_labels_clicked(self):
+        if self._clear_handler:
+            self._clear_handler()
+        else:
+            self.clear_labels()
 
     # ------------------------------------------------------------------
     # Row helpers
@@ -426,10 +456,13 @@ class ConfigurationScreen(qt.QWidget):
 
         # ------ Preset bar ------
         preset_group = qt.QGroupBox("Presets")
+        preset_group_layout = qt.QVBoxLayout()
+        preset_group_layout.setContentsMargins(6, 4, 6, 4)
+        preset_group_layout.setSpacing(6)
+        preset_group.setLayout(preset_group_layout)
+
         preset_layout = qt.QHBoxLayout()
-        preset_layout.setContentsMargins(6, 4, 6, 4)
         preset_layout.setSpacing(6)
-        preset_group.setLayout(preset_layout)
 
         self._preset_combo = qt.QComboBox()
         preset_layout.addWidget(self._preset_combo)
@@ -438,9 +471,32 @@ class ConfigurationScreen(qt.QWidget):
         save_preset_btn.clicked.connect(self._on_save_preset)
         preset_layout.addWidget(save_preset_btn)
 
+        self._delete_preset_btn = qt.QPushButton("Delete Preset")
+        self._delete_preset_btn.setEnabled(False)
+        self._delete_preset_btn.setStyleSheet(
+            "QPushButton { color: #c62828; }"
+            " QPushButton:disabled { color: #bbb; }"
+        )
+        self._delete_preset_btn.clicked.connect(self._on_delete_preset)
+        preset_layout.addWidget(self._delete_preset_btn)
+
         import_btn = qt.QPushButton("Import from JSON")
         import_btn.clicked.connect(self._on_import_preset)
         preset_layout.addWidget(import_btn)
+
+        preset_group_layout.addLayout(preset_layout)
+
+        clear_everything_row = qt.QHBoxLayout()
+        clear_everything_row.addStretch()
+        self._clear_everything_btn = qt.QPushButton("Clear Everything")
+        self._clear_everything_btn.setStyleSheet(
+            "QPushButton { color: #c62828; border: 1px solid #ef9a9a; border-radius: 4px;"
+            " padding: 4px 12px; }"
+            " QPushButton:hover { background: #FFEBEE; }"
+        )
+        self._clear_everything_btn.clicked.connect(self._on_clear_everything)
+        clear_everything_row.addWidget(self._clear_everything_btn)
+        preset_group_layout.addLayout(clear_everything_row)
 
         self._content_layout.addWidget(preset_group)
 
@@ -450,6 +506,12 @@ class ConfigurationScreen(qt.QWidget):
             "Slice-level classification labels (e.g. Normal / Abnormal).",
             category_key="classification",
         )
+        self._class_section.set_clear_handler(
+            lambda: self._clear_category_labels(
+                self._class_section,
+                "Remove all classification labels?",
+            )
+        )
         self._content_layout.addWidget(self._class_section)
 
         self._roi_section = LabelCategoryWidget(
@@ -458,12 +520,24 @@ class ConfigurationScreen(qt.QWidget):
             include_drawing_tool=True,
             category_key="roi",
         )
+        self._roi_section.set_clear_handler(
+            lambda: self._clear_category_labels(
+                self._roi_section,
+                "Remove all ROI labels?",
+            )
+        )
         self._content_layout.addWidget(self._roi_section)
 
         self._seg_section = LabelCategoryWidget(
             "Segment Labels",
             "Voxel-level segment labels for segmentation.",
             category_key="segmentation",
+        )
+        self._seg_section.set_clear_handler(
+            lambda: self._clear_category_labels(
+                self._seg_section,
+                "Remove all segmentation labels?",
+            )
         )
         self._content_layout.addWidget(self._seg_section)
 
@@ -483,7 +557,9 @@ class ConfigurationScreen(qt.QWidget):
 
         try:
             self._preset_combo.currentIndexChanged.connect(self._on_preset_selected)
+            self._preset_combo.currentIndexChanged.connect(self._update_delete_preset_button)
             self._refresh_preset_combo()
+            self._update_delete_preset_button()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(
@@ -559,8 +635,79 @@ class ConfigurationScreen(qt.QWidget):
                 "Please add at least one label in any category before proceeding.",
             )
             return
+        if not self._is_configuration_saved_as_preset():
+            qt.QMessageBox.warning(
+                self,
+                "Preset Required",
+                "Please save your configuration as a preset before continuing.",
+            )
+            return
         if self._on_confirm_callback:
             self._on_confirm_callback(config)
+
+    @staticmethod
+    def _label_configs_equal(left, right):
+        """True when two LabelConfig instances describe the same label definitions."""
+        categories = [
+            (left.class_labels, right.class_labels, False),
+            (left.roi_labels, right.roi_labels, True),
+            (left.segmentation_classes, right.segmentation_classes, False),
+        ]
+        for left_labels, right_labels, include_drawing_tool in categories:
+            if len(left_labels) != len(right_labels):
+                return False
+            left_by_id = {lbl.id: lbl for lbl in left_labels}
+            right_by_id = {lbl.id: lbl for lbl in right_labels}
+            if set(left_by_id) != set(right_by_id):
+                return False
+            for label_id, left_label in left_by_id.items():
+                right_label = right_by_id[label_id]
+                if left_label.name != right_label.name:
+                    return False
+                if normalize_hex_color(left_label.color) != normalize_hex_color(right_label.color):
+                    return False
+                if left_label.description != right_label.description:
+                    return False
+                if include_drawing_tool and (
+                    left_label.resolved_drawing_tool() != right_label.resolved_drawing_tool()
+                ):
+                    return False
+        return True
+
+    def _is_configuration_saved_as_preset(self):
+        """True when the current tables match a preset saved on disk."""
+        preset_name = self._current_preset_name
+        if not preset_name or not find_preset_name(preset_name):
+            return False
+        try:
+            saved_config = LabelConfig.from_dict(load_preset(preset_name))
+        except FileNotFoundError:
+            return False
+        return self._label_configs_equal(self.get_config(), saved_config)
+
+    def _clear_category_labels(self, section, message):
+        reply = qt.QMessageBox.question(
+            self,
+            "Clear Labels",
+            message,
+            qt.QMessageBox.Yes | qt.QMessageBox.No,
+        )
+        if reply != qt.QMessageBox.Yes:
+            return
+        section.clear_labels()
+
+    def _on_clear_everything(self):
+        reply = qt.QMessageBox.question(
+            self,
+            "Clear Everything",
+            "This will remove all configured labels from all categories.\n\nContinue?",
+            qt.QMessageBox.Yes | qt.QMessageBox.No,
+        )
+        if reply != qt.QMessageBox.Yes:
+            return
+        self._class_section.clear_labels()
+        self._roi_section.clear_labels()
+        self._seg_section.clear_labels()
 
     # ------------------------------------------------------------------
     # Presets
@@ -589,9 +736,21 @@ class ConfigurationScreen(qt.QWidget):
             index = self._preset_combo.findText(previous)
             if index >= 0:
                 self._preset_combo.setCurrentIndex(index)
+            else:
+                self._clear_preset_selection()
         elif self._preset_combo.count > 0:
             self._clear_preset_selection()
         self._preset_combo.blockSignals(False)
+        self._update_delete_preset_button()
+
+    def _update_delete_preset_button(self, _index=None):
+        if not hasattr(self, "_delete_preset_btn"):
+            return
+        index = self._preset_combo.currentIndex
+        if callable(index):
+            index = index()
+        enabled = index >= 0 and bool(self._combo_current_text(self._preset_combo))
+        self._delete_preset_btn.setEnabled(enabled)
 
     def _clear_preset_selection(self):
         try:
@@ -693,6 +852,7 @@ class ConfigurationScreen(qt.QWidget):
         try:
             path = save_preset(preset_name, config.to_dict())
             saved_name = os.path.splitext(os.path.basename(path))[0]
+            self._load_preset_config(config, saved_name)
             self._refresh_preset_combo(select_name=saved_name)
             qt.QMessageBox.information(
                 self,
@@ -701,6 +861,43 @@ class ConfigurationScreen(qt.QWidget):
             )
         except Exception as exc:
             qt.QMessageBox.critical(self, "Error", f"Failed to save preset:\n{exc}")
+
+    def _on_delete_preset(self):
+        index = self._preset_combo.currentIndex
+        if callable(index):
+            index = index()
+        if index < 0:
+            return
+        preset_name = self._preset_combo.itemText(index)
+        if not preset_name:
+            return
+
+        reply = qt.QMessageBox.question(
+            self,
+            "Delete Preset",
+            "Are you sure you want to delete the selected preset?\n\n"
+            "This action cannot be undone.",
+            qt.QMessageBox.Yes | qt.QMessageBox.No,
+        )
+        if reply != qt.QMessageBox.Yes:
+            return
+
+        try:
+            delete_preset(preset_name)
+        except FileNotFoundError:
+            qt.QMessageBox.warning(self, "Not Found", f'Preset "{preset_name}" was not found.')
+            self._refresh_preset_combo()
+            return
+        except Exception as exc:
+            qt.QMessageBox.critical(self, "Error", f"Failed to delete preset:\n{exc}")
+            return
+
+        if preset_name_key(self._current_preset_name) == preset_name_key(preset_name):
+            self._current_preset_name = None
+
+        self._refresh_preset_combo()
+        self._clear_preset_selection()
+        qt.QMessageBox.information(self, "Deleted", f'Preset "{preset_name}" was deleted.')
 
     def _on_import_preset(self):
         path = self._file_dialog_path(
