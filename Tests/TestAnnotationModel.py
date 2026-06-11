@@ -22,6 +22,14 @@ from AnnotationModel import (
 )
 from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export
 from SliceInfo import anatomical_slice_index_from_ijk
+from ConfigurationValidation import (
+    CONFIG_SOURCE_IMPORTED,
+    CONFIG_SOURCE_MANUAL,
+    CONFIG_SOURCE_PRESET,
+    MESSAGE_IMPORTED_SAVE_PRESET,
+    MESSAGE_SAVE_PRESET,
+    configuration_continue_blocked_reason,
+)
 
 
 class TestAnatomicalSliceIndex(unittest.TestCase):
@@ -1671,6 +1679,39 @@ class TestBackwardCompatibility(unittest.TestCase):
         record = AnnotationRecord.from_dict(export_data)
         self.assertIsNone(record.segmentation)
         self.assertEqual(record.class_labels[0].label, "Normal")
+
+
+class TestConfigurationContinueValidation(unittest.TestCase):
+    def test_loaded_preset_allows_continue(self):
+        self.assertIsNone(
+            configuration_continue_blocked_reason(CONFIG_SOURCE_PRESET, dirty=False)
+        )
+
+    def test_modified_preset_requires_save(self):
+        self.assertEqual(
+            configuration_continue_blocked_reason(CONFIG_SOURCE_PRESET, dirty=True),
+            MESSAGE_SAVE_PRESET,
+        )
+
+    def test_manual_configuration_requires_save(self):
+        self.assertEqual(
+            configuration_continue_blocked_reason(CONFIG_SOURCE_MANUAL, dirty=False),
+            MESSAGE_SAVE_PRESET,
+        )
+        self.assertEqual(
+            configuration_continue_blocked_reason(CONFIG_SOURCE_MANUAL, dirty=True),
+            MESSAGE_SAVE_PRESET,
+        )
+
+    def test_imported_configuration_requires_explicit_save(self):
+        self.assertEqual(
+            configuration_continue_blocked_reason(CONFIG_SOURCE_IMPORTED, dirty=False),
+            MESSAGE_IMPORTED_SAVE_PRESET,
+        )
+        self.assertEqual(
+            configuration_continue_blocked_reason(CONFIG_SOURCE_IMPORTED, dirty=True),
+            MESSAGE_IMPORTED_SAVE_PRESET,
+        )
 
 
 if __name__ == "__main__":
