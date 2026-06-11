@@ -53,7 +53,6 @@ class AnnotationPanelWidget(ScriptedLoadableModuleWidget):
 
             self.panel = AnnotationPanelRootWidget()
             self.layout.addWidget(self.panel)
-            self.layout.addStretch(1)
         except Exception as exc:
             error_box = qt.QTextEdit()
             error_box.setReadOnly(True)

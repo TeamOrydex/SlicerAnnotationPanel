@@ -168,13 +168,21 @@ class ROITab(qt.QWidget):
         self._table.setHorizontalHeaderLabels(
             ["#", "Actions", "Geometry", "Category", "Color", "Plane", "Slice #"]
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.setColumnWidth(1, 150)
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, qt.QHeaderView.Stretch)
+        header.setSectionResizeMode(3, qt.QHeaderView.Stretch)
+        header.setSectionResizeMode(4, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, qt.QHeaderView.ResizeToContents)
         self._table.setSelectionBehavior(qt.QTableWidget.SelectRows)
         self._table.setSelectionMode(qt.QTableWidget.SingleSelection)
         self._table.setEditTriggers(qt.QTableWidget.NoEditTriggers)
+        self._table.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
         self._table.cellClicked.connect(self._on_table_row_clicked)
-        parent_layout.addWidget(self._table)
+        parent_layout.addWidget(self._table, 1)
 
     def _build_actions(self, parent_layout):
         action_row = qt.QHBoxLayout()
@@ -1620,8 +1628,8 @@ class ROITab(qt.QWidget):
             # Column 1: action buttons
             action_widget = qt.QWidget()
             action_layout = qt.QHBoxLayout(action_widget)
-            action_layout.setContentsMargins(2, 2, 2, 2)
-            action_layout.setSpacing(4)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.setSpacing(2)
 
             delete_btn = qt.QPushButton("\u2715")
             delete_btn.setFixedSize(24, 24)

@@ -1210,6 +1210,24 @@ class TestLabelColors(unittest.TestCase):
         normalized_used = {normalize_hex_color(color) for color in used}
         self.assertNotIn(picked, normalized_used)
 
+    def test_category_palettes_use_distinct_ordering(self):
+        from LabelColors import get_category_palette, next_available_color
+
+        class_palette = get_category_palette("classification")
+        roi_palette = get_category_palette("roi")
+        seg_palette = get_category_palette("segmentation")
+
+        self.assertGreaterEqual(len(class_palette), 50)
+        self.assertEqual(len(class_palette), len(set(class_palette)))
+
+        class_first = next_available_color([], palette=class_palette)
+        roi_first = next_available_color([], palette=roi_palette)
+        seg_first = next_available_color([], palette=seg_palette)
+
+        self.assertNotEqual(class_first, roi_first)
+        self.assertNotEqual(class_first, seg_first)
+        self.assertNotEqual(roi_first, seg_first)
+
 
 class TestExportFolderNaming(unittest.TestCase):
     def test_prefers_scan_filename_stem(self):

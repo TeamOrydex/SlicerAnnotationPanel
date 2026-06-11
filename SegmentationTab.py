@@ -203,6 +203,8 @@ class SegmentationTab(qt.QWidget):
             pass
         fl.addWidget(self._segment_editor_widget)
 
+        qt.QTimer.singleShot(0, self._hide_segment_editor_navigation_button)
+
         opacity_row = qt.QHBoxLayout()
         opacity_row.addWidget(qt.QLabel("Overlay opacity:"))
         self._opacity_slider = qt.QSlider(qt.Qt.Horizontal)
@@ -213,6 +215,55 @@ class SegmentationTab(qt.QWidget):
         fl.addLayout(opacity_row)
 
         parent_layout.addWidget(frame)
+
+    def _hide_segment_editor_navigation_button(self):
+        """Hide the unused green arrow next to Show 3D in Slicer's segment editor."""
+        widget = self._segment_editor_widget
+        if not widget:
+            return
+
+        hidden = False
+        arrow_labels = {">", "→", "▶", "➤", "»", "↗", "➔"}
+        jump_tokens = ("jump", "go to", "fly to", "center on", "scroll to", "slice offset")
+
+        for button in widget.findChildren(qt.QAbstractButton):
+            if not isinstance(button, (qt.QPushButton, qt.QToolButton)):
+                continue
+            tip = (button.toolTip or "").lower()
+            label = (button.text or "").strip().lower()
+            if label in {text.lower() for text in arrow_labels} or label in arrow_labels:
+                button.setVisible(False)
+                hidden = True
+                continue
+            if any(token in tip for token in jump_tokens):
+                button.setVisible(False)
+                hidden = True
+
+        show_3d_widget = None
+        for checkbox in widget.findChildren(qt.QCheckBox):
+            text = f"{checkbox.text or ''} {checkbox.toolTip or ''}".lower()
+            if "show 3d" in text or "edit in 3d" in text or "3d view" in text:
+                show_3d_widget = checkbox
+                break
+
+        if show_3d_widget:
+            parent = show_3d_widget.parentWidget()
+            layout = parent.layout() if parent else None
+            if layout:
+                found_show_3d = False
+                for index in range(layout.count()):
+                    item = layout.itemAt(index)
+                    item_widget = item.widget() if item else None
+                    if item_widget is show_3d_widget:
+                        found_show_3d = True
+                        continue
+                    if found_show_3d and isinstance(item_widget, qt.QAbstractButton):
+                        item_widget.setVisible(False)
+                        hidden = True
+                        break
+
+        if not hidden:
+            logger.debug("Segment editor navigation button not found to hide")
 
     def _build_export_section(self, parent_layout):
         frame = qt.QFrame()
@@ -579,6 +630,8 @@ class SegmentationTab(qt.QWidget):
                 self._segment_editor_widget.setMasterVolumeNode(volume_node)
             except AttributeError:
                 logger.warning("Could not set source volume on segment editor widget")
+
+        qt.QTimer.singleShot(0, self._hide_segment_editor_navigation_button)
 
     # ─── Opacity ─────────────────────────────────────────────────────────
 
