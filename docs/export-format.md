@@ -9,7 +9,9 @@ directory chosen in the export dialog.
 <selected-export-directory>/
 └── <scan-folder>/
     ├── annotations.json
-    └── segmentation.nii.gz   # present when segmentation annotations exist
+    ├── segmentation.nii.gz       # plain labelmap (when segmentation exists)
+    ├── segmentation.nrrd         # plain labelmap (when segmentation exists)
+    └── segmentation.seg.nrrd     # Slicer-native (names and colors preserved)
 ```
 
 Example:
@@ -18,7 +20,9 @@ Example:
 Export/
 └── Patient_123_Scan/
     ├── annotations.json
-    └── segmentation.nii.gz
+    ├── segmentation.nii.gz
+    ├── segmentation.nrrd
+    └── segmentation.seg.nrrd
 ```
 
 ## Folder naming
@@ -65,13 +69,36 @@ do not support direct NIfTI export.
 Each segment label value in the volume corresponds to the combined labelmap
 produced from all configured segmentation classes.
 
+## segmentation.nrrd
+
+Plain NRRD labelmap with the same voxel values and spatial metadata as
+`segmentation.nii.gz`. Intended for tools that prefer NRRD over NIfTI.
+
+Segment names and colors are **not** embedded in this file. Use
+`segmentation.seg.nrrd` or `annotations.json` (`label_configuration.segment_labels`)
+for label semantics.
+
+## segmentation.seg.nrrd
+
+Slicer-native segmentation export. Preserves segment names, colors, and geometry
+metadata in a single file.
+
+Use this file when loading segmentations directly in 3D Slicer via **Data → Add
+Data** — it loads as a segmentation with correct names and colors without a
+separate color table.
+
 ## Import behavior
 
 Use **Import Annotations** in the annotation workspace (after configuration is
 confirmed). You can select:
 
-- An **export folder** containing `annotations.json` and optional `segmentation.nii.gz`
-- A single **`annotations.json`** file (sibling `segmentation.nii.gz` is discovered automatically)
+- An **export folder** containing `annotations.json` and optional segmentation volume(s)
+- A single **`annotations.json`** file (sibling segmentation files are discovered automatically)
+- A single segmentation file (`segmentation.nii.gz`, `segmentation.nrrd`, or
+  `segmentation.seg.nrrd`)
+
+When multiple segmentation files are present, import prefers `segmentation.seg.nrrd`,
+then `segmentation.nii.gz`, then `segmentation.nrrd`.
 
 Import does **not** require a loaded scan. Annotations restore into the active
 session whether or not a series is loaded.
@@ -95,7 +122,8 @@ colors, and ROI drawing tools).
 | `label_configuration` | Active preset (saved as `Import-<scan-name>`) and all three label tables when configuration is replaced |
 | `classification_labels` | Classification tab (mapped by `category_id`) |
 | `regions_of_interest` | ROI tab and MRML markup nodes (mapped by `category_id`) |
-| `segmentation.nii.gz` | Segmentation tab (label values mapped to `segment_labels` order) |
+| `segmentation.seg.nrrd` | Segmentation tab (names and colors preserved) |
+| `segmentation.nii.gz` or `segmentation.nrrd` | Segmentation tab (label values mapped to `segment_labels` order) |
 
 `label_configuration` is authoritative: names, colors, and descriptions from the
 JSON config sync onto imported annotations using stable label ids.
@@ -104,15 +132,18 @@ JSON config sync onto imported annotations using stable label ids.
 
 | Situation | Behavior |
 |-----------|----------|
-| `annotations.json` missing, NIfTI present | Segmentation loads; warning shown |
-| NIfTI missing, JSON present | Classification and ROI load; warning shown |
+| `annotations.json` missing, segmentation volume present | Segmentation loads; warning shown |
+| All segmentation volumes missing, JSON present | Classification and ROI load; warning shown |
 | Invalid JSON | Error dialog; no crash |
 
 ### Segmentation label mapping
 
-Exported NIfTI uses labelmap values `1`, `2`, `3`, … in the same order as
-`segment_labels` in `label_configuration`. On import, each value maps back to
-the corresponding configured class. Missing classes are added as empty segments.
+Plain labelmap exports (`segmentation.nii.gz`, `segmentation.nrrd`) use values
+`1`, `2`, `3`, … in the same order as `segment_labels` in `label_configuration`.
+On import, each value maps back to the corresponding configured class. Missing
+classes are added as empty segments.
+
+`segmentation.seg.nrrd` carries segment names and colors in the file itself.
 
 ### Draft files
 
