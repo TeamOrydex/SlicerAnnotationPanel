@@ -1,7 +1,7 @@
 import qt
 
 from AnnotationModel import ClassLabelAnnotation
-from SliceInfo import capture_all_planes_slice_info, install_slice_tracking, remove_slice_tracking
+from SliceInfo import capture_all_planes_slice_info, install_slice_tracking
 
 
 class ClassLabelTab(qt.QWidget):
@@ -100,6 +100,7 @@ class ClassLabelTab(qt.QWidget):
         if clear_annotations:
             self._annotations = []
         self._selected_label_def = None
+        install_slice_tracking()
 
         for label_def in self._labels:
             btn = qt.QPushButton(label_def.name)
@@ -159,19 +160,21 @@ class ClassLabelTab(qt.QWidget):
         self._volume_node = volume_node
         if volume_node:
             self._volume_info_label.setText(f"Series: {volume_node.GetName()}")
-            install_slice_tracking()
         else:
-            self._volume_info_label.setText("")
-            remove_slice_tracking()
+            self._volume_info_label.setText(
+                "No series linked. Classification labels use the current slice views."
+            )
+        install_slice_tracking()
         self._update_add_button_state()
 
     def clear_and_unbind(self):
         """Clear all annotation rows. Labels persist from config."""
         self._annotations = []
         self._volume_node = None
-        self._volume_info_label.setText("")
+        self._volume_info_label.setText(
+            "No series linked. Classification labels use the current slice views."
+        )
         self._clear_label_selection()
-        remove_slice_tracking()
         self._refresh_table()
 
     # ─── Internal ────────────────────────────────────────────────────────
@@ -208,17 +211,19 @@ class ClassLabelTab(qt.QWidget):
         self._update_add_button_state()
 
     def _update_add_button_state(self):
-        can_add = bool(self._selected_label_def and self._volume_node)
+        can_add = bool(self._selected_label_def)
         self._add_btn.setEnabled(can_add)
-        if not self._volume_node:
-            self._add_btn.setToolTip("Load a scan before adding labels")
-        elif not self._selected_label_def:
+        if not self._selected_label_def:
             self._add_btn.setToolTip("Select a label first")
+        elif not self._volume_node:
+            self._add_btn.setToolTip(
+                "Capture slice indexes from the current slice views (no series required)"
+            )
         else:
             self._add_btn.setToolTip("")
 
     def _on_add_clicked(self):
-        if not self._selected_label_def or not self._volume_node:
+        if not self._selected_label_def:
             return
 
         plane_infos = capture_all_planes_slice_info(self._volume_node)
