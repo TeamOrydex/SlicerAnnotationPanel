@@ -25,8 +25,9 @@ AnnotationPanel/
 
 ## Workflow
 
-The panel works as a standalone annotation tool. After configuring labels, all
-annotation tabs are available immediately — a loaded image series is optional.
+The panel works as a standalone annotation tool. Configure labels on the
+configuration screen, then continue to the annotation workspace for
+classification, ROI, and segmentation work. A loaded image series is optional.
 
 ```text
 Open Extension → Configure Labels → Annotate → Import / Export
@@ -34,7 +35,7 @@ Open Extension → Configure Labels → Annotate → Import / Export
 
 Load images through Slicer's built-in tools (Data module, drag-and-drop, DICOM).
 When a series is present in the scene, the panel links it automatically for export
-metadata. Use **Detach Series** to unlink without clearing annotations.
+metadata without exposing series management in the panel UI.
 
 ## Export terminology
 
@@ -53,9 +54,13 @@ as `AnnotationSession_2026_06_11/` or `Export_<id-prefix>/`.
 
 `annotations.json` contains classification labels, ROIs, label configuration, and series metadata. Segmentation voxel data is exported separately as `segmentation.nii.gz`, not embedded in the JSON.
 
-Draft saves (`Save Draft`) still write a single JSON file and may include segmentation metadata for in-progress work.
-
-**Import Annotations** restores an export folder (or `annotations.json`) back into the panel: label configuration becomes the active preset, and classification, ROI, and segmentation data load into the normal annotation state for editing and re-export. A loaded scan is not required.
+**Import Annotations** and **Export Annotations** are available in the annotation
+workspace (after configuration is confirmed). Import restores an export folder
+(or `annotations.json`) back into the panel. When the imported
+`label_configuration` differs from the active configuration, you can replace
+the session with the imported project (and return to the configuration screen
+for review) or cancel and keep the current configuration unchanged. A loaded scan
+is not required.
 
 See [docs/export-format.md](docs/export-format.md) for folder naming, file contents, and import behavior.
 
