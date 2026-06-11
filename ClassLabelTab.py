@@ -4,6 +4,12 @@ from AnnotationModel import ClassLabelAnnotation
 from LabelColors import classification_label_button_stylesheet
 from SliceInfo import capture_all_planes_slice_info, install_slice_tracking
 
+DELETE_ROW_ICON = "\U0001F5D1"
+DELETE_ROW_BUTTON_STYLE = (
+    "QPushButton { border: none; font-size: 14px; color: #c62828; }"
+    " QPushButton:hover { background: #FFEBEE; border-radius: 4px; }"
+)
+
 
 class ClassLabelTab(qt.QWidget):
     """
@@ -297,9 +303,10 @@ class ClassLabelTab(qt.QWidget):
             self._table.setItem(row, 5, qt.QTableWidgetItem(self._format_plane_slice(annotation, "Sagittal")))
             self._table.setItem(row, 6, qt.QTableWidgetItem(annotation.category_color or ""))
 
-            delete_btn = qt.QPushButton("✕")
+            delete_btn = qt.QPushButton(DELETE_ROW_ICON)
             delete_btn.setFixedSize(28, 24)
             delete_btn.setToolTip("Remove this label row")
+            delete_btn.setStyleSheet(DELETE_ROW_BUTTON_STYLE)
             delete_btn.clicked.connect(lambda _checked=False, r=row: self._on_delete_row(r))
             self._table.setCellWidget(row, 1, delete_btn)
 
