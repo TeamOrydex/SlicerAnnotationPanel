@@ -38,6 +38,8 @@ Formal export writes a **scan-specific folder** under the directory you choose:
 
 Draft saves (`Save Draft`) still write a single JSON file and may include segmentation metadata for in-progress work.
 
+**Import Annotations** restores an export folder (or `annotations.json`) back into the panel: label configuration becomes the active preset, and classification, ROI, and segmentation data load into the normal annotation state for editing and re-export. A loaded scan is not required.
+
 See [docs/export-format.md](docs/export-format.md) for folder naming, file contents, and import behavior.
 
 Each export includes:

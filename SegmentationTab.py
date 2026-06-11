@@ -16,6 +16,7 @@ from AnnotationModel import (
     PlaneSliceContext,
     VOLUME_SCOPED_EFFECTS,
     should_record_segment_modification,
+    segment_label_def_for_label_value,
 )
 from SliceInfo import (
     capture_slice_info,
@@ -288,16 +289,30 @@ class SegmentationTab(qt.QWidget):
 
     # ─── Volume Binding (called by panel) ────────────────────────────────
 
-    def set_volume(self, volume_node):
+    def set_volume(self, volume_node, create_segments=True):
         """Bind a shared volume as the source for segmentation."""
         self._volume_node = volume_node
         if volume_node:
             install_slice_tracking()
         self._ensure_segmentation_node(volume_node)
         self._link_editor_to_nodes(volume_node)
-        if self._seg_labels:
+        if create_segments and self._seg_labels:
             self._create_segments_from_config()
         self._start_context_timer()
+
+    def bind_volume_reference(self, volume_node):
+        """Attach a source volume to existing segmentation without recreating segments."""
+        self._volume_node = volume_node
+        if volume_node:
+            install_slice_tracking()
+        if self._segmentation_node and volume_node:
+            self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
+                volume_node
+            )
+            self._link_editor_to_nodes(volume_node)
+        elif volume_node:
+            self._ensure_segmentation_node(volume_node)
+            self._link_editor_to_nodes(volume_node)
 
     def clear_and_unbind(self):
         """Remove segmentation data and unbind the volume.
@@ -334,11 +349,85 @@ class SegmentationTab(qt.QWidget):
 
     # ─── Label Config (called by panel) ──────────────────────────────────
 
-    def set_labels(self, labels):
+    def set_labels(self, labels, create_segments=True):
         """Receive segmentation class labels from config. Creates segments if volume exists."""
         self._seg_labels = list(labels)
-        if self._segmentation_node:
+        if create_segments and self._segmentation_node:
             self._create_segments_from_config()
+
+    def reconcile_imported_segment_labels(self, seg_labels, label_to_segment_map=None):
+        """Associate configured segmentation classes with imported MRML segments."""
+        self._seg_labels = list(seg_labels)
+        if self._segmentation_node is None:
+            return
+
+        segmentation = self._segmentation_node.GetSegmentation()
+        label_by_id = {label_def.id: label_def for label_def in seg_labels}
+        label_by_name = {label_def.name: label_def for label_def in seg_labels}
+        self._label_to_segment_map = {}
+
+        if label_to_segment_map:
+            for label_id, segment_id in label_to_segment_map.items():
+                if not label_id or not segment_id:
+                    continue
+                label_def = label_by_id.get(label_id)
+                segment = segmentation.GetSegment(segment_id)
+                if not label_def or not segment:
+                    continue
+                segment.SetName(label_def.name)
+                r, g, b = hex_to_rgb_float(label_def.color)
+                segment.SetColor(r, g, b)
+                self._label_to_segment_map[label_id] = segment_id
+
+        mapped_segment_ids = set(self._label_to_segment_map.values())
+        for i in range(segmentation.GetNumberOfSegments()):
+            segment_id = segmentation.GetNthSegmentID(i)
+            if segment_id in mapped_segment_ids:
+                continue
+            segment = segmentation.GetSegment(segment_id)
+            if not segment:
+                continue
+
+            label_def = None
+            try:
+                label_value = int(segment.GetLabelValue())
+                label_def = segment_label_def_for_label_value(label_value, seg_labels)
+            except Exception:
+                label_def = None
+
+            if label_def is None:
+                label_def = label_by_name.get(segment.GetName())
+
+            if not label_def:
+                continue
+
+            segment.SetName(label_def.name)
+            r, g, b = hex_to_rgb_float(label_def.color)
+            segment.SetColor(r, g, b)
+            self._label_to_segment_map[label_def.id] = segment_id
+            mapped_segment_ids.add(segment_id)
+
+        for i in range(segmentation.GetNumberOfSegments() - 1, -1, -1):
+            segment_id = segmentation.GetNthSegmentID(i)
+            if segment_id not in mapped_segment_ids:
+                segmentation.RemoveSegment(segment_id)
+
+        for label_def in seg_labels:
+            if label_def.id in self._label_to_segment_map:
+                continue
+            r, g, b = hex_to_rgb_float(label_def.color)
+            segment_id = segmentation.AddEmptySegment(
+                label_def.name, label_def.name, [r, g, b]
+            )
+            self._label_to_segment_map[label_def.id] = segment_id
+
+        self._select_first_segment()
+        self._reset_modification_snapshots()
+        self._refresh_stats()
+        try:
+            self._segment_editor_widget.refresh()
+        except Exception:
+            pass
 
     def update_labels_from_config(self, old_labels, new_labels):
         """Update segment names/colors in place without wiping painted data."""
@@ -519,9 +608,10 @@ class SegmentationTab(qt.QWidget):
     def _export_segments_to_labelmap(self, labelmap_node):
         """Export segmentation segments into a labelmap aligned to the source volume."""
         logic = slicer.modules.segmentations.logic()
-        self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
-            self._volume_node
-        )
+        if self._volume_node:
+            self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
+                self._volume_node
+            )
 
         extent_mode = getattr(
             slicer.vtkSegmentation, "EXTENT_REFERENCE_GEOMETRY", None
@@ -548,8 +638,8 @@ class SegmentationTab(qt.QWidget):
 
     def export_mask_to_file(self, filepath, fmt="nrrd"):
         """Export the segmentation labelmap to a file. Returns True on success."""
-        if self._segmentation_node is None or self._volume_node is None:
-            self._last_export_error = "Segmentation or source volume is not available."
+        if self._segmentation_node is None:
+            self._last_export_error = "Segmentation is not available."
             return False
 
         labelmap_node = None
@@ -1510,15 +1600,22 @@ class SegmentationTab(qt.QWidget):
 
     def load_segmentation(self, seg_data):
         """Load a SegmentationData object: import mask file or create from labels."""
+        self._last_import_error = ""
         if seg_data is None:
-            return
+            return True
 
         volume_node = self._volume_node
 
         if seg_data.export_filepath:
-            import os
             if os.path.exists(seg_data.export_filepath):
                 try:
+                    if self._segmentation_node:
+                        try:
+                            slicer.mrmlScene.RemoveNode(self._segmentation_node)
+                        except Exception:
+                            pass
+                        self._segmentation_node = None
+
                     labelmap_node = slicer.util.loadLabelVolume(seg_data.export_filepath)
                     self._segmentation_node = slicer.mrmlScene.AddNewNodeByClass(
                         "vtkMRMLSegmentationNode"
@@ -1535,8 +1632,21 @@ class SegmentationTab(qt.QWidget):
                         self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
                             volume_node
                         )
+                    self._install_segmentation_observer()
+                    display_node = self._segmentation_node.GetDisplayNode()
+                    if display_node:
+                        display_node.SetVisibility(True)
+                        display_node.SetAllSegmentsVisibility(True)
+                        display_node.SetOpacity(self._opacity_slider.value / 100.0)
                 except Exception as e:
+                    self._last_import_error = str(e)
                     logger.error(f"Failed to load segmentation mask: {e}")
+                    return False
+            else:
+                self._last_import_error = (
+                    f"Segmentation file not found: {seg_data.export_filepath}"
+                )
+                return False
 
         if self._segmentation_node is None and volume_node:
             self._ensure_segmentation_node(volume_node)
@@ -1559,6 +1669,13 @@ class SegmentationTab(qt.QWidget):
 
         if volume_node:
             self._link_editor_to_nodes(volume_node)
+        elif self._segmentation_node and self._segment_editor_node is None:
+            self._segment_editor_node = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLSegmentEditorNode"
+            )
+            self._segment_editor_widget.setMRMLSegmentEditorNode(self._segment_editor_node)
+            self._segment_editor_widget.setSegmentationNode(self._segmentation_node)
+            self._install_segment_editor_observer()
         self._start_context_timer()
 
         self._modification_events = list(seg_data.modification_events or [])
@@ -1576,6 +1693,10 @@ class SegmentationTab(qt.QWidget):
 
         if seg_data.total_voxel_count > 0:
             self._stats_label.setText(f"Total segmented voxels: {seg_data.total_voxel_count:,}")
+        elif self._segmentation_node is not None:
+            self._refresh_stats()
+
+        return True
 
     def deactivate_effect(self):
         """Stop the active painting effect."""

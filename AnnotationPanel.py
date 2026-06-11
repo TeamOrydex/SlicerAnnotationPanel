@@ -79,12 +79,20 @@ class AnnotationPanelLogic(ScriptedLoadableModuleLogic):
 
     def load_annotation_file(self, filepath):
         """Load an annotation JSON file and return an AnnotationRecord."""
-        from AnnotationModel import AnnotationRecord
-        import json
+        from AnnotationModel import (
+            build_record_from_import,
+            resolve_import_paths,
+        )
 
-        with open(filepath, "r") as f:
-            data = json.load(f)
-        return AnnotationRecord.from_dict(data)
+        resolution = resolve_import_paths(filepath)
+        record, errors = build_record_from_import(resolution)
+        if errors or record is None:
+            raise ValueError("\n".join(errors or resolution.errors or ["Import failed."]))
+        return record
+
+    def import_annotations(self, panel_widget, path):
+        """Import annotations through the panel UI."""
+        return panel_widget.import_annotations(path)
 
     def save_annotation_file(self, record, filepath):
         """Save an AnnotationRecord to a JSON file."""

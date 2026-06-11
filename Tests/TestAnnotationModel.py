@@ -14,6 +14,9 @@ from AnnotationModel import (
     SegmentSpatialExtent, SegmentModificationEvent,
     should_record_segment_modification, VOLUME_SCOPED_EFFECTS,
     derive_export_folder_name, resolve_unique_export_subdirectory,
+    resolve_import_paths, build_record_from_import,
+    reconcile_imported_record, derive_import_preset_name,
+    segment_label_def_for_label_value,
     EXPORT_ANNOTATIONS_FILENAME, EXPORT_SEGMENTATION_FILENAME,
 )
 from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export
@@ -1274,6 +1277,275 @@ class TestExportFolderNaming(unittest.TestCase):
             "/tmp/export/Scan_001/annotations.json"
         )
         self.assertEqual(path, "/tmp/export/Scan_001/segmentation.nii.gz")
+
+
+class TestImportResolution(unittest.TestCase):
+    def test_resolve_import_paths_from_folder(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            nifti_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write("{}")
+            with open(nifti_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(export_dir)
+            self.assertEqual(resolution.annotations_path, json_path)
+            self.assertEqual(resolution.segmentation_path, nifti_path)
+            self.assertTrue(resolution.is_importable())
+            self.assertEqual(resolution.warnings, [])
+
+    def test_resolve_import_paths_from_json_file(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write("{}")
+
+            resolution = resolve_import_paths(json_path)
+            self.assertEqual(resolution.annotations_path, json_path)
+            self.assertEqual(
+                resolution.segmentation_path,
+                os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME),
+            )
+            self.assertIn("segmentation.nii.gz was not found", resolution.warnings[0])
+
+    def test_resolve_import_paths_missing_both_files(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            resolution = resolve_import_paths(export_dir)
+            self.assertFalse(resolution.is_importable())
+            self.assertTrue(resolution.errors)
+
+    def test_resolve_import_paths_segmentation_only(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            nifti_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            with open(nifti_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(export_dir)
+            self.assertTrue(resolution.has_segmentation_file)
+            self.assertFalse(resolution.has_annotations_file)
+            self.assertIn("annotations.json was not found", resolution.warnings[0])
+
+    def test_build_record_from_export_folder(self):
+        label_config = LabelConfig(
+            class_labels=[LabelDefinition(id="c1", name="Normal", color="#ff0000")],
+            roi_labels=[LabelDefinition(id="r1", name="Lesion", color="#00ff00")],
+            segmentation_classes=[LabelDefinition(id="s1", name="Tumor", color="#0000ff")],
+        )
+        record = AnnotationRecord(
+            label_config=label_config,
+            class_labels=[ClassLabelAnnotation(label="Normal")],
+            rois=[ROIAnnotation(roi_type="line", control_points=[{"x": 0, "y": 0, "z": 0}])],
+            segmentation=SegmentationData(
+                labels=[SegmentLabel(name="Tumor", color="#0000ff", segment_id="Segment_1")],
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            nifti_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write(record.to_export_json())
+            with open(nifti_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            resolution = resolve_import_paths(export_dir)
+            imported, errors = build_record_from_import(resolution)
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(imported)
+            self.assertEqual(imported.class_labels[0].label, "Normal")
+            self.assertEqual(len(imported.rois), 1)
+            self.assertIsNotNone(imported.segmentation)
+            self.assertEqual(imported.segmentation.export_filepath, nifti_path)
+            self.assertEqual(imported.segmentation.export_format, "nifti")
+
+    def test_build_record_segmentation_only_uses_fallback_config(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            nifti_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            with open(nifti_path, "wb") as handle:
+                handle.write(b"\x00")
+
+            fallback = LabelConfig(
+                segmentation_classes=[LabelDefinition(id="s1", name="Tumor", color="#0000ff")],
+            )
+            resolution = resolve_import_paths(export_dir)
+            imported, errors = build_record_from_import(
+                resolution,
+                fallback_label_config=fallback,
+            )
+            self.assertEqual(errors, [])
+            self.assertIsNotNone(imported)
+            self.assertEqual(imported.label_config, fallback)
+            self.assertEqual(imported.segmentation.export_filepath, nifti_path)
+
+    def test_build_record_requires_label_configuration(self):
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "class_labels": ["Normal"],
+                            "rois": [],
+                        }
+                    )
+                )
+
+            resolution = resolve_import_paths(json_path)
+            imported, errors = build_record_from_import(resolution)
+            self.assertIsNone(imported)
+            self.assertTrue(errors)
+
+    def test_reconcile_imported_record_syncs_annotation_mappings(self):
+        label_config = LabelConfig(
+            class_labels=[
+                LabelDefinition(
+                    id="8c982bf2-5457-4188-b633-50752dcb44f2",
+                    name="Normal",
+                    color="#4caf50",
+                    description="Normal spleen size and appearance",
+                ),
+            ],
+            roi_labels=[
+                LabelDefinition(
+                    id="1219711e-5aa4-4f2d-9076-8a9931389480",
+                    name="Spleen",
+                    color="#8b4513",
+                    description="Spleen boundary region",
+                ),
+            ],
+            segmentation_classes=[
+                LabelDefinition(
+                    id="f95fa81a-296e-42b8-ad57-1445465aeea1",
+                    name="Spleen",
+                    color="#8b4513",
+                    description="Spleen parenchyma",
+                ),
+            ],
+        )
+        record = AnnotationRecord(
+            label_config=label_config,
+            class_labels=[
+                ClassLabelAnnotation(
+                    label="Stale Name",
+                    category_id="8c982bf2-5457-4188-b633-50752dcb44f2",
+                    category_color="#000000",
+                )
+            ],
+            rois=[
+                ROIAnnotation(
+                    roi_type="line",
+                    label="Old ROI Label",
+                    category_id="1219711e-5aa4-4f2d-9076-8a9931389480",
+                    color="#000000",
+                    control_points=[{"x": 0, "y": 0, "z": 0}],
+                )
+            ],
+            segmentation=SegmentationData(
+                labels=[
+                    SegmentLabel(
+                        name="Old Segment",
+                        color="#000000",
+                        segment_id="Segment_1",
+                        label_config_id="f95fa81a-296e-42b8-ad57-1445465aeea1",
+                    )
+                ],
+            ),
+        )
+
+        reconcile_imported_record(record)
+
+        self.assertEqual(record.class_labels[0].label, "Normal")
+        self.assertEqual(record.class_labels[0].category_color, "#4caf50")
+        self.assertEqual(record.rois[0].label, "Spleen")
+        self.assertEqual(record.rois[0].color, "#8b4513")
+        self.assertEqual(record.segmentation.labels[0].name, "Spleen")
+        self.assertEqual(record.segmentation.labels[0].color, "#8b4513")
+        self.assertEqual(
+            record.segmentation.label_to_segment_map["f95fa81a-296e-42b8-ad57-1445465aeea1"],
+            "Segment_1",
+        )
+
+    def test_build_record_reads_label_configuration_export_keys(self):
+        payload = {
+            "label_configuration": {
+                "classification_labels": [
+                    {
+                        "id": "8c982bf2-5457-4188-b633-50752dcb44f2",
+                        "name": "Normal",
+                        "color": "#4caf50",
+                        "description": "Normal spleen size and appearance",
+                    }
+                ],
+                "roi_categories": [
+                    {
+                        "id": "1219711e-5aa4-4f2d-9076-8a9931389480",
+                        "name": "Spleen",
+                        "color": "#8b4513",
+                        "description": "Spleen boundary region",
+                    }
+                ],
+                "segment_labels": [
+                    {
+                        "id": "f95fa81a-296e-42b8-ad57-1445465aeea1",
+                        "name": "Spleen",
+                        "color": "#8b4513",
+                        "description": "Spleen parenchyma",
+                    }
+                ],
+            },
+            "classification_labels": [
+                {
+                    "category": "Normal",
+                    "category_id": "8c982bf2-5457-4188-b633-50752dcb44f2",
+                    "category_color": "#4caf50",
+                    "plane_slices": [],
+                }
+            ],
+            "regions_of_interest": [
+                {
+                    "geometry_type_id": "line",
+                    "category": "Spleen",
+                    "category_id": "1219711e-5aa4-4f2d-9076-8a9931389480",
+                    "color": "#8b4513",
+                    "control_points_ras": [{"x": 1, "y": 2, "z": 3}],
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as export_dir:
+            json_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
+            with open(json_path, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload))
+
+            resolution = resolve_import_paths(json_path)
+            imported, errors = build_record_from_import(resolution)
+            self.assertEqual(errors, [])
+            self.assertEqual(len(imported.label_config.class_labels), 1)
+            self.assertEqual(len(imported.label_config.roi_labels), 1)
+            self.assertEqual(len(imported.label_config.segmentation_classes), 1)
+            self.assertEqual(imported.class_labels[0].label, "Normal")
+            self.assertEqual(imported.rois[0].label, "Spleen")
+            self.assertEqual(imported.class_labels[0].category_id, "8c982bf2-5457-4188-b633-50752dcb44f2")
+
+    def test_derive_import_preset_name_from_scan_metadata(self):
+        record = AnnotationRecord(
+            scan=ScanMetadata(filename="Patient_123.nii.gz"),
+            study_id="STUDY-1",
+        )
+        self.assertEqual(derive_import_preset_name(record), "Import-Patient_123")
+
+    def test_segment_label_def_for_label_value_maps_export_order(self):
+        seg_labels = [
+            LabelDefinition(id="a", name="Spleen", color="#8b4513"),
+            LabelDefinition(id="b", name="Lesion", color="#e6194b"),
+            LabelDefinition(id="c", name="Infarct", color="#911eb4"),
+        ]
+        self.assertEqual(segment_label_def_for_label_value(1, seg_labels).name, "Spleen")
+        self.assertEqual(segment_label_def_for_label_value(2, seg_labels).name, "Lesion")
+        self.assertEqual(segment_label_def_for_label_value(3, seg_labels).name, "Infarct")
+        self.assertIsNone(segment_label_def_for_label_value(0, seg_labels))
+        self.assertIsNone(segment_label_def_for_label_value(4, seg_labels))
 
 
 class TestBackwardCompatibility(unittest.TestCase):
