@@ -320,6 +320,34 @@ class ClassLabelAnnotation:
         return annotation
 
 
+ROI_BOX_2D_TYPES = frozenset({"rectangle_2d"})
+ROI_BOX_3D_TYPES = frozenset({"rectangle_3d", "rectangle"})
+ROI_CURVE_TYPES = frozenset({"polygon", "freehand_curve", "ellipse"})
+ROI_LINE_TYPES = frozenset({"line"})
+
+
+def _valid_ras_points(points, minimum=1):
+    if not isinstance(points, list) or len(points) < minimum:
+        return False
+    for pt in points:
+        if not isinstance(pt, dict):
+            return False
+        if not all(axis in pt for axis in ("x", "y", "z")):
+            return False
+    return True
+
+
+def _valid_ras_xyz(coords):
+    return isinstance(coords, list) and len(coords) == 3
+
+
+def _non_zero_extent(values, minimum_count=2):
+    if not isinstance(values, list) or len(values) < minimum_count:
+        return False
+    significant = [float(v or 0.0) for v in values[:minimum_count]]
+    return sum(1 for v in significant if abs(v) > 1e-6) >= minimum_count
+
+
 @dataclass
 class ROIAnnotation:
     """A single region of interest on an image series (RAS coordinates)."""
@@ -354,7 +382,56 @@ class ROIAnnotation:
     center_voxel_ijk: list = field(default_factory=list)
     transform_handles_enabled: bool = False
 
+    def normalize_geometry_fields(self):
+        """Keep derived geometry fields consistent before export."""
+        self.number_of_control_points = len(self.control_points or [])
+        if self.radii and not self.bounding_box_dimensions:
+            self.bounding_box_dimensions = [float(r) * 2.0 for r in self.radii[:3]]
+        elif self.bounding_box_dimensions and not self.radii:
+            self.radii = [float(d) / 2.0 for d in self.bounding_box_dimensions[:3]]
+
+    def missing_reconstruction_fields(self) -> list:
+        """Return export keys still required to rebuild this ROI on import."""
+        roi_type = self.roi_type or ""
+        missing = []
+        if not roi_type:
+            missing.append("geometry_type_id")
+
+        if roi_type in ROI_LINE_TYPES:
+            if not _valid_ras_points(self.control_points, 2):
+                missing.append("control_points_ras")
+        elif roi_type in ROI_CURVE_TYPES:
+            minimum = 3 if roi_type == "polygon" else 2
+            if not _valid_ras_points(self.control_points, minimum):
+                missing.append("control_points_ras")
+        elif roi_type in ROI_BOX_2D_TYPES:
+            has_corners = _valid_ras_points(self.control_points, 4)
+            has_centered_box = _valid_ras_xyz(self.center_ras) and (
+                _non_zero_extent(self.bounding_box_dimensions, 2)
+                or _non_zero_extent(self.radii, 2)
+            )
+            if not has_corners and not has_centered_box:
+                missing.append("control_points_ras")
+                missing.append("center_ras with bounding_box_dimensions or radii")
+        elif roi_type in ROI_BOX_3D_TYPES:
+            has_center = _valid_ras_xyz(self.center_ras) or _valid_ras_points(
+                self.control_points, 1
+            )
+            has_size = _non_zero_extent(self.radii, 2) or _non_zero_extent(
+                self.bounding_box_dimensions, 2
+            )
+            if not has_center:
+                missing.append("center_ras")
+            if not has_size:
+                missing.append("radii")
+                missing.append("bounding_box_dimensions")
+        return missing
+
+    def has_reconstruction_geometry(self) -> bool:
+        return not self.missing_reconstruction_fields()
+
     def to_dict(self) -> dict:
+        self.normalize_geometry_fields()
         return {
             "id": self.id,
             "geometry_type": roi_geometry_type_export(self.roi_type),
@@ -381,6 +458,7 @@ class ROIAnnotation:
             "orientation": list(self.orientation),
             "center_ras": list(self.center_ras),
             "center_voxel_ijk": list(self.center_voxel_ijk),
+            "transform_handles_enabled": bool(self.transform_handles_enabled),
             "description": self.description,
             "mrml_node_id": self.mrml_node_id,
             "mrml_node_name": self.mrml_node_name,
@@ -418,6 +496,7 @@ class ROIAnnotation:
             orientation=data.get("orientation", []),
             center_ras=data.get("center_ras", []),
             center_voxel_ijk=data.get("center_voxel_ijk", []),
+            transform_handles_enabled=bool(data.get("transform_handles_enabled", False)),
             description=data.get("description", ""),
             mrml_node_id=data.get("mrml_node_id", ""),
             mrml_node_name=data.get("mrml_node_name", ""),
