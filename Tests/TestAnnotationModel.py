@@ -402,6 +402,16 @@ class TestROIAnnotation(unittest.TestCase):
         self.assertEqual(roi.roi_type, "")
         self.assertEqual(roi.control_points, [])
         self.assertEqual(roi.mrml_node_id, "")
+        self.assertTrue(roi.visible)
+
+    def test_visibility_not_exported(self):
+        roi = ROIAnnotation(roi_type="polygon", visible=False)
+        exported = roi.to_dict()
+        self.assertNotIn("visible", exported)
+
+    def test_from_dict_defaults_visible(self):
+        roi = ROIAnnotation.from_dict({"geometry_type_id": "polygon", "category": "Lesion"})
+        self.assertTrue(roi.visible)
 
     def test_to_dict_includes_mrml_node_id(self):
         roi = ROIAnnotation(mrml_node_id="vtkMRMLMarkupsLineNode1")
