@@ -14,10 +14,10 @@ from AnnotationModel import (
     resolve_import_paths,
     build_record_from_import,
     derive_import_preset_name,
+    label_configs_differ,
     EXPORT_ANNOTATIONS_FILENAME,
     EXPORT_SEGMENTATION_FILENAME,
 )
-from LabelColors import normalize_hex_color
 from RadiologyTerms import drawing_tool_display_name
 from PresetStorage import preset_name_key, save_preset_overwrite
 from SliceInfo import find_preferred_volume_node, install_slice_tracking
@@ -29,13 +29,12 @@ from ConfigurationScreen import ConfigurationScreen
 
 class AnnotationPanelRootWidget(qt.QWidget):
     """
-    Root panel widget: configuration screen, optional image series, tab bar, action bar.
+    Root panel widget: configuration screen and annotation workspace.
     Manages a single AnnotationRecord and coordinates annotation workflow.
 
     Flow:
       1. Configuration screen shown (define labels)
-      2. Annotation tabs become available immediately after configuration
-      3. Image series are optional and enhance export metadata when present
+      2. Annotation workspace with import/export after configuration is confirmed
     """
 
     def __init__(self, parent=None):
@@ -54,48 +53,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
     def _setup_ui(self):
         main_layout = qt.QVBoxLayout(self)
-
-        self._build_scan_section(main_layout)
         self._build_stacked_area(main_layout)
-        self._build_action_bar(main_layout)
-
-    def _build_scan_section(self, parent_layout):
-        self._scan_group = qt.QGroupBox("Image Series")
-        scan_layout = qt.QVBoxLayout(self._scan_group)
-
-        self._no_scan_widget = qt.QWidget()
-        no_scan_layout = qt.QVBoxLayout(self._no_scan_widget)
-        no_scan_layout.setContentsMargins(0, 0, 0, 0)
-
-        self._no_scan_label = qt.QLabel(
-            "No series linked. Annotate on the blank workspace, or load an image "
-            "in Slicer to attach series metadata automatically."
-        )
-        no_scan_layout.addWidget(self._no_scan_label)
-        scan_layout.addWidget(self._no_scan_widget)
-
-        self._scan_info_widget = qt.QWidget()
-        info_layout = qt.QVBoxLayout(self._scan_info_widget)
-        info_layout.setContentsMargins(0, 0, 0, 0)
-
-        self._scan_name_label = qt.QLabel("")
-        self._scan_name_label.setStyleSheet("font-weight: bold; color: green;")
-        info_layout.addWidget(self._scan_name_label)
-
-        self._scan_dims_label = qt.QLabel("")
-        info_layout.addWidget(self._scan_dims_label)
-
-        detach_row = qt.QHBoxLayout()
-        self._unload_scan_btn = qt.QPushButton("Detach Series")
-        self._unload_scan_btn.clicked.connect(self._on_detach_scan)
-        detach_row.addWidget(self._unload_scan_btn)
-        detach_row.addStretch()
-        info_layout.addLayout(detach_row)
-
-        scan_layout.addWidget(self._scan_info_widget)
-        self._scan_info_widget.setVisible(False)
-
-        parent_layout.addWidget(self._scan_group)
 
     def _build_stacked_area(self, parent_layout):
         self._stacked_widget = qt.QStackedWidget()
@@ -141,6 +99,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
         ann_layout.addWidget(self._tab_widget, 1)
+        self._build_action_bar(ann_layout)
 
         self._stacked_widget.addWidget(self._annotation_area)
 
@@ -161,11 +120,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._import_btn = qt.QPushButton("Import Annotations")
         self._import_btn.clicked.connect(self._on_import_annotations)
         btn_layout.addWidget(self._import_btn)
-
-        self._save_draft_btn = qt.QPushButton("Save Draft")
-        self._save_draft_btn.setStyleSheet("QPushButton { padding: 4px 10px; }")
-        self._save_draft_btn.clicked.connect(self._on_save_draft)
-        btn_layout.addWidget(self._save_draft_btn)
 
         self._export_btn = qt.QPushButton("Export Annotations")
         self._export_btn.setStyleSheet(
@@ -217,31 +171,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._initialize_annotation_workspace()
         self._update_readiness()
 
-    @staticmethod
-    def _label_config_modified(old_config, new_config):
-        """True when any label name, color, or ROI drawing tool differs."""
-        categories = [
-            (old_config.class_labels, new_config.class_labels, False),
-            (old_config.roi_labels, new_config.roi_labels, True),
-            (old_config.segmentation_classes, new_config.segmentation_classes, False),
-        ]
-        for old_labels, new_labels, include_drawing_tool in categories:
-            old_by_id = {lbl.id: lbl for lbl in old_labels}
-            new_by_id = {lbl.id: lbl for lbl in new_labels}
-            if set(old_by_id) != set(new_by_id):
-                return True
-            for label_id, old_label in old_by_id.items():
-                new_label = new_by_id[label_id]
-                if old_label.name != new_label.name:
-                    return True
-                if normalize_hex_color(old_label.color) != normalize_hex_color(new_label.color):
-                    return True
-                if include_drawing_tool and (
-                    old_label.resolved_drawing_tool() != new_label.resolved_drawing_tool()
-                ):
-                    return True
-        return False
-
     def _should_warn_roi_deletion_on_config_confirm(
         self, old_config, new_config, preset_changed
     ):
@@ -250,7 +179,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
             return False
         if preset_changed:
             return True
-        return self._label_config_modified(old_config, new_config)
+        return label_configs_differ(old_config, new_config)
 
     def _on_config_preset_changed(self, new_name, old_name):
         """Clear annotations when a different preset is loaded on the config screen."""
@@ -478,8 +407,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         """Enable annotation actions once label configuration is ready."""
         config_ready = self._label_config is not None
         self._tab_widget.setEnabled(config_ready)
-        self._import_btn.setEnabled(True)
-        self._save_draft_btn.setEnabled(config_ready)
         self._export_btn.setEnabled(config_ready)
 
     def _initialize_annotation_workspace(self):
@@ -532,7 +459,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
             and self._active_volume_node.GetID() == volume_node.GetID()
         ):
             self._record.scan = self._build_scan_metadata(volume_node, "")
-            self._set_scan_state(loaded=True)
             return
 
         self._bind_volume(volume_node, source_path="")
@@ -557,7 +483,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         else:
             self._segmentation_tab.set_volume(volume_node, create_segments=False)
 
-        self._set_scan_state(loaded=True)
         self._update_readiness()
 
     def _detach_volume(self):
@@ -568,35 +493,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._roi_tab.set_volume(None)
         if self._segmentation_tab.has_segmentation_workspace():
             self._segmentation_tab.detach_volume_reference()
-        self._set_scan_state(loaded=False)
         self._update_readiness()
-
-    def _on_detach_scan(self):
-        self._detach_volume()
-
-    def _set_scan_state(self, loaded):
-        self._no_scan_widget.setVisible(not loaded)
-        self._scan_info_widget.setVisible(loaded)
-
-        if loaded and self._active_volume_node:
-            name = self._active_volume_node.GetName()
-            self._scan_name_label.setText(
-                f"\u2713 Series linked: {name} (detected in Slicer)"
-            )
-
-            image_data = self._active_volume_node.GetImageData()
-            if image_data:
-                dims = image_data.GetDimensions()
-                spacing = self._active_volume_node.GetSpacing()
-                self._scan_dims_label.setText(
-                    f"Dimensions: {dims[0]} \u00d7 {dims[1]} \u00d7 {dims[2]}   "
-                    f"Spacing: {spacing[0]:.2f} \u00d7 {spacing[1]:.2f} \u00d7 {spacing[2]:.2f}"
-                )
-            else:
-                self._scan_dims_label.setText("")
-        else:
-            self._scan_name_label.setText("")
-            self._scan_dims_label.setText("")
 
     def _build_scan_metadata(self, volume_node, source_path):
         from SliceInfo import capture_volume_metadata
@@ -705,6 +602,71 @@ class AnnotationPanelRootWidget(qt.QWidget):
                 record.label_config.segmentation_classes,
             )
 
+    def _prompt_import_configuration_choice(self):
+        """Ask whether to replace the active configuration with the imported one."""
+        dialog = qt.QMessageBox(self)
+        dialog.setWindowTitle("Import Annotations")
+        dialog.setText(
+            "Imported annotations contain a different annotation configuration.\n\n"
+            "Would you like to replace the current configuration and annotations "
+            "with the imported configuration and annotations?"
+        )
+        import_new_btn = dialog.addButton(
+            "Import New Configuration",
+            qt.QMessageBox.AcceptRole,
+        )
+        dialog.addButton(
+            "Keep Current Configuration",
+            qt.QMessageBox.RejectRole,
+        )
+        dialog.setDefaultButton(import_new_btn)
+        dialog.exec_()
+        return dialog.clickedButton() == import_new_btn
+
+    def _import_summary_message(self, record):
+        imported_parts = []
+        if record.class_labels:
+            imported_parts.append(f"{len(record.class_labels)} classification label(s)")
+        if record.rois:
+            imported_parts.append(f"{len(record.rois)} ROI(s)")
+        if record.segmentation and record.segmentation.export_filepath:
+            imported_parts.append("segmentation volume")
+        if imported_parts:
+            return "Imported " + ", ".join(imported_parts) + "."
+        return "Import completed."
+
+    def _show_import_result(self, record, resolution):
+        summary = self._import_summary_message(record)
+        if resolution.warnings:
+            qt.QMessageBox.warning(
+                self,
+                "Import Completed with Warnings",
+                summary + "\n\n" + "\n".join(resolution.warnings),
+            )
+        else:
+            qt.QMessageBox.information(self, "Import Complete", summary)
+
+    def _apply_import_with_new_configuration(self, record, resolution):
+        """Replace configuration and annotations, then return to the config screen."""
+        self._clear_all_annotations(notify=False)
+
+        preset_name = derive_import_preset_name(record, resolution.directory)
+        self._apply_imported_label_configuration(record.label_config, preset_name)
+        self._push_labels_to_tabs_for_import(record.label_config)
+        self.set_record(record)
+        self._sync_detected_volume()
+        self._stacked_widget.setCurrentIndex(0)
+        self._show_import_result(record, resolution)
+        self._update_readiness()
+
+    def _apply_import_with_current_configuration(self, record, resolution):
+        """Load imported annotations under the active configuration."""
+        self._push_labels_to_tabs_for_import(self._label_config)
+        self.set_record(record)
+        self._sync_detected_volume()
+        self._show_import_result(record, resolution)
+        self._update_readiness()
+
     def import_annotations(self, path):
         """Import annotations from an export folder or annotations.json file."""
         resolution = resolve_import_paths(path)
@@ -728,44 +690,22 @@ class AnnotationPanelRootWidget(qt.QWidget):
             )
             return False
 
-        if self._has_any_annotations():
-            result = qt.QMessageBox.question(
+        imported_config = record.label_config
+        if imported_config is None:
+            qt.QMessageBox.critical(
                 self,
-                "Import Annotations",
-                "Importing will replace the current annotations in this session.\n\nContinue?",
-                qt.QMessageBox.Yes | qt.QMessageBox.No,
-                qt.QMessageBox.No,
+                "Import Failed",
+                "The import package does not include label configuration.",
             )
-            if result != qt.QMessageBox.Yes:
+            return False
+
+        if label_configs_differ(self._label_config, imported_config):
+            if not self._prompt_import_configuration_choice():
                 return False
+            self._apply_import_with_new_configuration(record, resolution)
+            return True
 
-        preset_name = derive_import_preset_name(record, resolution.directory)
-        self._apply_imported_label_configuration(record.label_config, preset_name)
-        self._push_labels_to_tabs_for_import(record.label_config)
-        self._stacked_widget.setCurrentIndex(1)
-
-        self.set_record(record)
-        self._sync_detected_volume()
-
-        imported_parts = []
-        if record.class_labels:
-            imported_parts.append(f"{len(record.class_labels)} classification label(s)")
-        if record.rois:
-            imported_parts.append(f"{len(record.rois)} ROI(s)")
-        if record.segmentation and record.segmentation.export_filepath:
-            imported_parts.append("segmentation volume")
-
-        summary = "Imported " + ", ".join(imported_parts) + "." if imported_parts else "Import completed."
-        if resolution.warnings:
-            qt.QMessageBox.warning(
-                self,
-                "Import Completed with Warnings",
-                summary + "\n\n" + "\n".join(resolution.warnings),
-            )
-        else:
-            qt.QMessageBox.information(self, "Import Complete", summary)
-
-        self._update_readiness()
+        self._apply_import_with_current_configuration(record, resolution)
         return True
 
     def load_annotation(self, filepath):
@@ -802,16 +742,6 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._record.class_labels = self._class_label_tab.get_class_label_annotations()
         self._record.rois = self._roi_tab.get_roi_annotations()
         self._record.segmentation = self._segmentation_tab.get_segmentation_data()
-
-    def _on_save_draft(self):
-        filepath = qt.QFileDialog.getSaveFileName(
-            self, "Save Annotation Draft", "", "JSON Files (*.json)"
-        )
-        if not filepath:
-            return
-        self._collect_all_data()
-        with open(filepath, "w") as f:
-            f.write(self._record.to_json())
 
     def _on_export(self):
         self._collect_all_data()

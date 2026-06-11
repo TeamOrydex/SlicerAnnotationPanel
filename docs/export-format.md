@@ -56,9 +56,6 @@ Primary keys:
 Legacy aliases (`label_config`, `scan`, `class_labels`, `rois`) are still
 written for backward compatibility.
 
-Draft saves (`Save Draft`) continue to use a single JSON file and may still
-include segmentation metadata for in-progress work.
-
 ## segmentation.nii.gz
 
 Multi-label segmentation masks exported as a NIfTI labelmap volume. Labelmap data is
@@ -70,7 +67,8 @@ produced from all configured segmentation classes.
 
 ## Import behavior
 
-Use **Import Annotations** in the panel action bar. You can select:
+Use **Import Annotations** in the annotation workspace (after configuration is
+confirmed). You can select:
 
 - An **export folder** containing `annotations.json` and optional `segmentation.nii.gz`
 - A single **`annotations.json`** file (sibling `segmentation.nii.gz` is discovered automatically)
@@ -78,11 +76,23 @@ Use **Import Annotations** in the panel action bar. You can select:
 Import does **not** require a loaded scan. Annotations restore into the active
 session whether or not a series is loaded.
 
+### Configuration reconciliation
+
+After a package loads successfully, the panel compares the imported
+`label_configuration` with the active session configuration (label ids, names,
+colors, and ROI drawing tools).
+
+| Outcome | Behavior |
+|---------|----------|
+| Configurations match | Classification, ROI, and segmentation data load under the current configuration |
+| Configurations differ — **Import New Configuration** | Existing configuration and annotations are replaced; imported preset is saved as `Import-<scan-name>`; user returns to the configuration screen to review before continuing |
+| Configurations differ — **Keep Current Configuration** | Import is cancelled; no partial changes are applied |
+
 ### What is restored
 
 | Source | Restored into |
 |--------|----------------|
-| `label_configuration` | Active preset (saved as `Import-<scan-name>`) and all three label tables |
+| `label_configuration` | Active preset (saved as `Import-<scan-name>`) and all three label tables when configuration is replaced |
 | `classification_labels` | Classification tab (mapped by `category_id`) |
 | `regions_of_interest` | ROI tab and MRML markup nodes (mapped by `category_id`) |
 | `segmentation.nii.gz` | Segmentation tab (label values mapped to `segment_labels` order) |

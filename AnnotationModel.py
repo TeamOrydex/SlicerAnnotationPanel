@@ -13,6 +13,7 @@ from RadiologyTerms import (
     slice_view_to_plane,
 )
 from SliceInfo import anatomical_slice_index_from_ijk
+from LabelColors import normalize_hex_color
 
 
 def _resolve_slice_index(plane, data: dict) -> int:
@@ -244,6 +245,37 @@ class LabelConfig:
                 for d in data.get("segment_labels", data.get("segmentation_classes", []))
             ],
         )
+
+
+def label_configs_differ(
+    old_config: Optional["LabelConfig"],
+    new_config: Optional["LabelConfig"],
+) -> bool:
+    """True when label definitions differ by id, name, color, or ROI drawing tool."""
+    if old_config is None or new_config is None:
+        return old_config is not new_config
+
+    categories = [
+        (old_config.class_labels, new_config.class_labels, False),
+        (old_config.roi_labels, new_config.roi_labels, True),
+        (old_config.segmentation_classes, new_config.segmentation_classes, False),
+    ]
+    for old_labels, new_labels, include_drawing_tool in categories:
+        old_by_id = {lbl.id: lbl for lbl in old_labels}
+        new_by_id = {lbl.id: lbl for lbl in new_labels}
+        if set(old_by_id) != set(new_by_id):
+            return True
+        for label_id, old_label in old_by_id.items():
+            new_label = new_by_id[label_id]
+            if old_label.name != new_label.name:
+                return True
+            if normalize_hex_color(old_label.color) != normalize_hex_color(new_label.color):
+                return True
+            if include_drawing_tool and (
+                old_label.resolved_drawing_tool() != new_label.resolved_drawing_tool()
+            ):
+                return True
+    return False
 
 
 def _plane_display_name(plane: str) -> str:
