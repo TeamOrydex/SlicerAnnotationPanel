@@ -2,7 +2,7 @@
 
 A custom annotation panel for 3D Slicer that supports:
 - **Classification labels** — slice-level categories applied at the current anatomical plane
-- **Regions of interest (ROI)** — bounding boxes, polygon/freehand contours, and linear measurements
+- **Regions of interest (ROI)** — bounding boxes, polygon/freehand contours, and linear measurements; per-ROI and global hide/show toggles in the ROI tab (view state is session-only and not exported)
 - **Segmentations** — voxel-level segment painting (paint, erase, threshold, scissors)
 
 ## Structure
