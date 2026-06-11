@@ -17,6 +17,9 @@ from AnnotationModel import (
     VOLUME_SCOPED_EFFECTS,
     should_record_segment_modification,
     segment_label_def_for_label_value,
+    imported_segments_have_export_label_values,
+    label_config_id_for_export_label_value,
+    label_config_id_for_imported_segment_name,
     utc_iso_timestamp,
 )
 from SliceInfo import (
@@ -159,6 +162,7 @@ class SegmentationTab(qt.QWidget):
         self._label_to_segment_map = {}  # label_def.id -> segment_id in segmentation
         self._segment_created_at = {}  # segment_id -> creation timestamp (ISO 8601 UTC)
         self._imported_label_created_at = {}  # label_config_id -> imported created_at
+        self._imported_segments = []  # SegmentLabel metadata from last import
         self._modification_events = []
         self._segmentation_observer = None
         self._segmentation_core_observer = None
@@ -372,9 +376,15 @@ class SegmentationTab(qt.QWidget):
             self._start_context_timer()
         self._create_segments_from_config()
 
-    def reconcile_imported_segment_labels(self, seg_labels, label_to_segment_map=None):
+    def reconcile_imported_segment_labels(
+        self,
+        seg_labels,
+        label_to_segment_map=None,
+        imported_segments=None,
+    ):
         """Associate configured segmentation classes with imported MRML segments."""
         self._seg_labels = list(seg_labels)
+        self._imported_segments = list(imported_segments or [])
         if self._segmentation_node is None:
             return
 
@@ -382,6 +392,9 @@ class SegmentationTab(qt.QWidget):
         label_by_id = {label_def.id: label_def for label_def in seg_labels}
         label_by_name = {label_def.name: label_def for label_def in seg_labels}
         self._label_to_segment_map = {}
+        use_metadata_mapping = imported_segments_have_export_label_values(
+            self._imported_segments
+        )
 
         if label_to_segment_map:
             for label_id, segment_id in label_to_segment_map.items():
@@ -391,10 +404,7 @@ class SegmentationTab(qt.QWidget):
                 segment = segmentation.GetSegment(segment_id)
                 if not label_def or not segment:
                     continue
-                segment.SetName(label_def.name)
-                r, g, b = hex_to_rgb_float(label_def.color)
-                segment.SetColor(r, g, b)
-                self._label_to_segment_map[label_id] = segment_id
+                self._apply_label_def_to_segment(segment_id, segment, label_def)
 
         mapped_segment_ids = set(self._label_to_segment_map.values())
         for i in range(segmentation.GetNumberOfSegments()):
@@ -406,22 +416,33 @@ class SegmentationTab(qt.QWidget):
                 continue
 
             label_def = None
+            label_config_id = None
             try:
                 label_value = int(segment.GetLabelValue())
-                label_def = segment_label_def_for_label_value(label_value, seg_labels)
             except Exception:
-                label_def = None
+                label_value = 0
+
+            if label_value > 0:
+                label_config_id = label_config_id_for_export_label_value(
+                    label_value, self._imported_segments
+                )
+            if not label_config_id:
+                label_config_id = label_config_id_for_imported_segment_name(
+                    segment.GetName(), self._imported_segments
+                )
+            if label_config_id:
+                label_def = label_by_id.get(label_config_id)
 
             if label_def is None:
                 label_def = label_by_name.get(segment.GetName())
 
+            if label_def is None and not use_metadata_mapping and label_value > 0:
+                label_def = segment_label_def_for_label_value(label_value, seg_labels)
+
             if not label_def:
                 continue
 
-            segment.SetName(label_def.name)
-            r, g, b = hex_to_rgb_float(label_def.color)
-            segment.SetColor(r, g, b)
-            self._label_to_segment_map[label_def.id] = segment_id
+            self._apply_label_def_to_segment(segment_id, segment, label_def)
             mapped_segment_ids.add(segment_id)
 
         for i in range(segmentation.GetNumberOfSegments() - 1, -1, -1):
@@ -447,6 +468,13 @@ class SegmentationTab(qt.QWidget):
             self._segment_editor_widget.refresh()
         except Exception:
             pass
+
+    def _apply_label_def_to_segment(self, segment_id, segment, label_def):
+        """Sync MRML segment presentation and config mapping for one label."""
+        segment.SetName(label_def.name)
+        r, g, b = hex_to_rgb_float(label_def.color)
+        segment.SetColor(r, g, b)
+        self._label_to_segment_map[label_def.id] = segment_id
 
     def update_labels_from_config(self, old_labels, new_labels):
         """Update segment names/colors in place without wiping painted data."""
@@ -646,8 +674,23 @@ class SegmentationTab(qt.QWidget):
             if display_node:
                 display_node.SetOpacity(value / 100.0)
 
+    def _normalize_segment_label_values_for_export(self):
+        """Assign deterministic labelmap values by configured label order."""
+        if self._segmentation_node is None or not self._seg_labels:
+            return
+
+        segmentation = self._segmentation_node.GetSegmentation()
+        for index, label_def in enumerate(self._seg_labels):
+            segment_id = self._label_to_segment_map.get(label_def.id)
+            if not segment_id:
+                continue
+            segment = segmentation.GetSegment(segment_id)
+            if segment:
+                segment.SetLabelValue(index + 1)
+
     def _export_segments_to_labelmap(self, labelmap_node):
         """Export segmentation segments into a labelmap aligned to the source volume."""
+        self._normalize_segment_label_values_for_export()
         logic = slicer.modules.segmentations.logic()
         if self._volume_node:
             self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
@@ -752,17 +795,23 @@ class SegmentationTab(qt.QWidget):
 
     def _load_segmentation_from_seg_nrrd(self, filepath, volume_node):
         """Load a Slicer-native segmentation file that preserves names and colors."""
-        loaded_node_ids = slicer.util.load(filepath) or []
+        abs_path = os.path.abspath(filepath)
+        if not os.path.isfile(abs_path):
+            raise RuntimeError(f"Segmentation file not found: {abs_path}")
+
+        loaded = slicer.util.loadSegmentation(abs_path)
         segmentation_node = None
-        for node_id in loaded_node_ids:
-            node = slicer.mrmlScene.GetNodeByID(node_id)
-            if node and node.IsA("vtkMRMLSegmentationNode"):
-                segmentation_node = node
-                break
+        if loaded:
+            nodes = loaded if isinstance(loaded, (list, tuple)) else [loaded]
+            for node in nodes:
+                if node and node.IsA("vtkMRMLSegmentationNode"):
+                    segmentation_node = node
+                    break
+
         if segmentation_node is None:
             segmentation_node = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSegmentationNode")
         if segmentation_node is None:
-            raise RuntimeError(f"No segmentation node loaded from {filepath}")
+            raise RuntimeError(f"No segmentation node loaded from {abs_path}")
 
         segmentation_node.SetName("AnnotationSegmentation")
         segmentation_node.CreateDefaultDisplayNodes()
@@ -1594,7 +1643,12 @@ class SegmentationTab(qt.QWidget):
 
         segment_stats, full_stats = self._compute_stats(data)
 
+        config_by_id = {label_def.id: label_def for label_def in self._seg_labels}
         config_by_name = {label_def.name: label_def for label_def in self._seg_labels}
+        segment_id_to_label_id = {
+            segment_id: label_id
+            for label_id, segment_id in self._label_to_segment_map.items()
+        }
         for lbl in data.labels:
             labelmap_metrics = self._compute_labelmap_metrics(lbl.segment_id)
             lbl.voxel_count = int(labelmap_metrics.get("voxel_count", 0))
@@ -1603,10 +1657,22 @@ class SegmentationTab(qt.QWidget):
             if lbl.voxel_count == 0 and lbl.segment_id in segment_stats:
                 lbl.voxel_count = int(segment_stats[lbl.segment_id].get("voxel_count", 0) or 0)
 
-            label_def = config_by_name.get(lbl.name)
+            label_config_id = segment_id_to_label_id.get(lbl.segment_id)
+            label_def = config_by_id.get(label_config_id) if label_config_id else None
+            if label_def is None:
+                label_def = config_by_name.get(lbl.name)
             if label_def:
                 lbl.label_config_id = label_def.id
                 lbl.description = label_def.description
+
+            segment = None
+            if self._segmentation_node:
+                segment = self._segmentation_node.GetSegmentation().GetSegment(lbl.segment_id)
+            if segment:
+                try:
+                    lbl.export_label_value = int(segment.GetLabelValue())
+                except Exception:
+                    lbl.export_label_value = 0
 
             self._apply_effect_summary(lbl)
             seg_events = self._events_for_segment(lbl.segment_id, lbl.name)

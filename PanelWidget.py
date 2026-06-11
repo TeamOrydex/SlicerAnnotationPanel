@@ -598,10 +598,18 @@ class AnnotationPanelRootWidget(qt.QWidget):
                 self._segmentation_tab.reconcile_imported_segment_labels(
                     record.label_config.segmentation_classes,
                     label_to_segment_map=seg_map,
+                    imported_segments=(
+                        record.segmentation.labels if record.segmentation else None
+                    ),
                 )
         elif record.label_config:
             self._segmentation_tab.reconcile_imported_segment_labels(
                 record.label_config.segmentation_classes,
+                imported_segments=(
+                    record.segmentation.labels
+                    if record.segmentation and record.segmentation.labels
+                    else None
+                ),
             )
 
     def _prompt_import_configuration_choice(self):
