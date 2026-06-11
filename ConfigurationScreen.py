@@ -4,6 +4,12 @@ import json
 
 from AnnotationModel import LabelDefinition, LabelConfig
 from LabelColors import next_available_color, normalize_hex_color, DEFAULT_LABEL_COLOR
+from RadiologyTerms import (
+    DEFAULT_ROI_DRAWING_TOOL,
+    ROI_DRAWING_TOOLS,
+    drawing_tool_display_name,
+    normalize_drawing_tool,
+)
 from PresetStorage import (
     get_presets_dir,
     is_preset_name_taken,
@@ -19,9 +25,10 @@ from PresetStorage import (
 class LabelCategoryWidget(qt.QGroupBox):
     """Reusable group-box that manages a table of label definitions for one category."""
 
-    def __init__(self, title, subtitle, parent=None):
+    def __init__(self, title, subtitle, parent=None, include_drawing_tool=False):
         super().__init__(title, parent)
         self._subtitle = subtitle
+        self._include_drawing_tool = include_drawing_tool
 
         layout = qt.QVBoxLayout()
         self.setLayout(layout)
@@ -30,14 +37,22 @@ class LabelCategoryWidget(qt.QGroupBox):
         subtitle_label.setStyleSheet("color: #888; font-style: italic; margin-bottom: 4px;")
         layout.addWidget(subtitle_label)
 
-        self._table = qt.QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Color", "Name", "Description", "Actions"])
+        headers = ["Color", "Name", "Description"]
+        if include_drawing_tool:
+            headers.append("Drawing Tool")
+        headers.append("Actions")
+        self._table = qt.QTableWidget(0, len(headers))
+        self._table.setHorizontalHeaderLabels(headers)
         header = self._table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, qt.QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, qt.QHeaderView.Stretch)
         header.setSectionResizeMode(2, qt.QHeaderView.Stretch)
-        header.setSectionResizeMode(3, qt.QHeaderView.ResizeToContents)
+        if include_drawing_tool:
+            header.setSectionResizeMode(3, qt.QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(4, qt.QHeaderView.ResizeToContents)
+        else:
+            header.setSectionResizeMode(3, qt.QHeaderView.ResizeToContents)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
         self._table.setEditTriggers(qt.QAbstractItemView.NoEditTriggers)
@@ -52,6 +67,14 @@ class LabelCategoryWidget(qt.QGroupBox):
         )
         add_btn.clicked.connect(self._add_label)
         layout.addWidget(add_btn)
+
+    @property
+    def _actions_col(self):
+        return 4 if self._include_drawing_tool else 3
+
+    @property
+    def _tool_col(self):
+        return 3
 
     # ------------------------------------------------------------------
     # Public API
@@ -70,12 +93,18 @@ class LabelCategoryWidget(qt.QGroupBox):
                 import uuid
                 label_id = str(uuid.uuid4())
             stored_color = color_item.data(qt.Qt.UserRole) if color_item else ""
+            drawing_tool = ""
+            if self._include_drawing_tool:
+                tool_item = self._table.item(row, self._tool_col)
+                stored_tool = tool_item.data(qt.Qt.UserRole) if tool_item else ""
+                drawing_tool = normalize_drawing_tool(stored_tool) or DEFAULT_ROI_DRAWING_TOOL
             labels.append(
                 LabelDefinition(
                     id=label_id,
                     name=name_item.text() if name_item else "",
                     color=normalize_hex_color(stored_color) or DEFAULT_LABEL_COLOR,
                     description=desc_item.text() if desc_item else "",
+                    drawing_tool=drawing_tool,
                 )
             )
         return labels
@@ -84,7 +113,10 @@ class LabelCategoryWidget(qt.QGroupBox):
         """Clear the table and populate it from a list of LabelDefinition."""
         self._table.setRowCount(0)
         for lbl in labels:
-            self._insert_row(lbl.name, lbl.color, lbl.description, lbl.id)
+            drawing_tool = ""
+            if self._include_drawing_tool:
+                drawing_tool = lbl.resolved_drawing_tool()
+            self._insert_row(lbl.name, lbl.color, lbl.description, lbl.id, drawing_tool)
 
     # ------------------------------------------------------------------
     # Row helpers
@@ -103,8 +135,10 @@ class LabelCategoryWidget(qt.QGroupBox):
     def _pick_default_color(self):
         return next_available_color(self._get_used_colors())
 
-    def _insert_row(self, name, color, description, label_id=""):
+    def _insert_row(self, name, color, description, label_id="", drawing_tool=""):
         color = normalize_hex_color(color) or self._pick_default_color()
+        if self._include_drawing_tool:
+            drawing_tool = normalize_drawing_tool(drawing_tool) or DEFAULT_ROI_DRAWING_TOOL
         row = self._table.rowCount
         self._table.insertRow(row)
 
@@ -122,6 +156,12 @@ class LabelCategoryWidget(qt.QGroupBox):
         desc_item = qt.QTableWidgetItem(description)
         desc_item.setFlags(desc_item.flags() & ~qt.Qt.ItemIsEditable)
         self._table.setItem(row, 2, desc_item)
+
+        if self._include_drawing_tool:
+            tool_item = qt.QTableWidgetItem(drawing_tool_display_name(drawing_tool))
+            tool_item.setData(qt.Qt.UserRole, drawing_tool)
+            tool_item.setFlags(tool_item.flags() & ~qt.Qt.ItemIsEditable)
+            self._table.setItem(row, self._tool_col, tool_item)
 
         actions_widget = qt.QWidget()
         actions_layout = qt.QHBoxLayout()
@@ -149,7 +189,7 @@ class LabelCategoryWidget(qt.QGroupBox):
         delete_btn.clicked.connect(lambda _checked=False, _r=row: self._delete_label(_r))
         actions_layout.addWidget(delete_btn)
 
-        self._table.setCellWidget(row, 3, actions_widget)
+        self._table.setCellWidget(row, self._actions_col, actions_widget)
 
     def _refresh_action_connections(self):
         """Rebuild action-button connections after a row is removed so indices stay correct."""
@@ -180,7 +220,7 @@ class LabelCategoryWidget(qt.QGroupBox):
             delete_btn.clicked.connect(lambda _checked=False, _r=row: self._delete_label(_r))
             actions_layout.addWidget(delete_btn)
 
-            self._table.setCellWidget(row, 3, actions_widget)
+            self._table.setCellWidget(row, self._actions_col, actions_widget)
 
     # ------------------------------------------------------------------
     # Add / Edit / Delete
@@ -188,13 +228,18 @@ class LabelCategoryWidget(qt.QGroupBox):
 
     def _add_label(self):
         default_color = self._pick_default_color()
-        result = self._open_label_dialog("Add Label", "", default_color, "")
+        default_tool = DEFAULT_ROI_DRAWING_TOOL if self._include_drawing_tool else ""
+        result = self._open_label_dialog("Add Label", "", default_color, "", default_tool)
         if result is None:
             return
-        name, color, description = result
+        if self._include_drawing_tool:
+            name, color, description, drawing_tool = result
+        else:
+            name, color, description = result
+            drawing_tool = ""
         if not self._validate_name(name):
             return
-        self._insert_row(name, color, description)
+        self._insert_row(name, color, description, drawing_tool=drawing_tool)
 
     def _edit_label(self, row):
         if row < 0 or row >= self._table.rowCount:
@@ -202,11 +247,19 @@ class LabelCategoryWidget(qt.QGroupBox):
         old_name = self._table.item(row, 1).text()
         old_color = self._table.item(row, 0).data(qt.Qt.UserRole)
         old_desc = self._table.item(row, 2).text()
+        old_tool = ""
+        if self._include_drawing_tool:
+            tool_item = self._table.item(row, self._tool_col)
+            old_tool = tool_item.data(qt.Qt.UserRole) if tool_item else DEFAULT_ROI_DRAWING_TOOL
 
-        result = self._open_label_dialog("Edit Label", old_name, old_color, old_desc)
+        result = self._open_label_dialog("Edit Label", old_name, old_color, old_desc, old_tool)
         if result is None:
             return
-        name, color, description = result
+        if self._include_drawing_tool:
+            name, color, description, drawing_tool = result
+        else:
+            name, color, description = result
+            drawing_tool = ""
         if not self._validate_name(name, exclude_row=row):
             return
 
@@ -216,6 +269,11 @@ class LabelCategoryWidget(qt.QGroupBox):
         color_item = self._table.item(row, 0)
         color_item.setBackground(qt.QColor(color))
         color_item.setData(qt.Qt.UserRole, color)
+        if self._include_drawing_tool:
+            tool_item = self._table.item(row, self._tool_col)
+            drawing_tool = normalize_drawing_tool(drawing_tool) or DEFAULT_ROI_DRAWING_TOOL
+            tool_item.setText(drawing_tool_display_name(drawing_tool))
+            tool_item.setData(qt.Qt.UserRole, drawing_tool)
 
     def _delete_label(self, row):
         if row < 0 or row >= self._table.rowCount:
@@ -236,7 +294,7 @@ class LabelCategoryWidget(qt.QGroupBox):
     # Dialog
     # ------------------------------------------------------------------
 
-    def _open_label_dialog(self, title, name, color, description):
+    def _open_label_dialog(self, title, name, color, description, drawing_tool=""):
         dialog = qt.QDialog(self)
         dialog.setWindowTitle(title)
         dialog.setMinimumWidth(340)
@@ -270,6 +328,19 @@ class LabelCategoryWidget(qt.QGroupBox):
 
         desc_edit = qt.QLineEdit(description)
         form_layout.addRow("Description:", desc_edit)
+
+        tool_combo = None
+        if self._include_drawing_tool:
+            tool_combo = qt.QComboBox()
+            selected_tool = normalize_drawing_tool(drawing_tool) or DEFAULT_ROI_DRAWING_TOOL
+            selected_index = 0
+            for index, (tool_id, display_name) in enumerate(ROI_DRAWING_TOOLS):
+                tool_combo.addItem(display_name, tool_id)
+                if tool_id == selected_tool:
+                    selected_index = index
+            tool_combo.setCurrentIndex(selected_index)
+            form_layout.addRow("Drawing Tool:", tool_combo)
+
         layout.addLayout(form_layout)
 
         btn_box = qt.QDialogButtonBox()
@@ -281,6 +352,16 @@ class LabelCategoryWidget(qt.QGroupBox):
 
         if dialog.exec_() != qt.QDialog.Accepted:
             return None
+        if self._include_drawing_tool and tool_combo is not None:
+            tool_id = tool_combo.itemData(tool_combo.currentIndex)
+            if callable(tool_id):
+                tool_id = tool_id()
+            return (
+                name_edit.text.strip(),
+                chosen_color["value"],
+                desc_edit.text.strip(),
+                normalize_drawing_tool(tool_id) or DEFAULT_ROI_DRAWING_TOOL,
+            )
         return name_edit.text.strip(), chosen_color["value"], desc_edit.text.strip()
 
     # ------------------------------------------------------------------
@@ -367,6 +448,7 @@ class ConfigurationScreen(qt.QWidget):
         self._roi_section = LabelCategoryWidget(
             "ROI Categories",
             "Categories for regions of interest drawn on image slices.",
+            include_drawing_tool=True,
         )
         self._content_layout.addWidget(self._roi_section)
 
