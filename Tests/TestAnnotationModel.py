@@ -1236,7 +1236,8 @@ class TestExportFolderNaming(unittest.TestCase):
 
     def test_generated_fallback_when_no_metadata(self):
         record = AnnotationRecord(id="abcdef12-3456-7890-abcd-ef1234567890")
-        self.assertEqual(derive_export_folder_name(record), "scan-abcdef12")
+        name = derive_export_folder_name(record)
+        self.assertRegex(name, r"^AnnotationSession_\d{4}_\d{2}_\d{2}$")
 
     def test_sanitizes_invalid_characters(self):
         record = AnnotationRecord(scan=ScanMetadata(filename="bad/name?.nrrd"))

@@ -116,7 +116,7 @@ def _sanitize_export_folder_name(name: str) -> str:
 
 
 def derive_export_folder_name(record: "AnnotationRecord") -> str:
-    """Choose a scan-specific export subfolder name from available metadata."""
+    """Choose an export subfolder name from scan metadata or standalone fallbacks."""
     candidates = []
     if record.scan:
         if record.scan.filename:
@@ -133,7 +133,13 @@ def derive_export_folder_name(record: "AnnotationRecord") -> str:
         if safe:
             return safe
 
-    return f"scan-{record.id[:8]}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y_%m_%d")
+    session_name = f"AnnotationSession_{timestamp}"
+    safe = _sanitize_export_folder_name(session_name)
+    if safe:
+        return safe
+
+    return f"Export_{record.id[:8]}"
 
 
 def resolve_unique_export_subdirectory(parent_dir: str, folder_name: str) -> str:
