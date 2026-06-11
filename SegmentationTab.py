@@ -249,6 +249,36 @@ class SegmentationTab(qt.QWidget):
             self._create_segments_from_config()
         self._start_context_timer()
 
+    def initialize_without_volume(self, labels, create_segments=True):
+        """Create a segmentation workspace that does not require a loaded series."""
+        self._seg_labels = list(labels)
+        if self._volume_node:
+            self.set_volume(self._volume_node, create_segments=create_segments)
+            return
+        if self._segmentation_node is not None:
+            if create_segments and self._seg_labels:
+                self._create_segments_from_config()
+            return
+
+        install_slice_tracking()
+        self._ensure_segmentation_node(None)
+        self._link_editor_to_nodes(None)
+        if create_segments and self._seg_labels:
+            self._create_segments_from_config()
+        self._start_context_timer()
+
+    def has_segmentation_workspace(self):
+        """Return True when a segmentation node has been created for this tab."""
+        return self._segmentation_node is not None
+
+    def detach_volume_reference(self):
+        """Keep segmentation data but stop referencing a source volume."""
+        self._volume_node = None
+        if self._segmentation_node is None:
+            return
+        self._apply_default_reference_geometry()
+        self._link_editor_to_nodes(None)
+
     def bind_volume_reference(self, volume_node):
         """Attach a source volume to existing segmentation without recreating segments."""
         self._volume_node = volume_node
@@ -299,10 +329,16 @@ class SegmentationTab(qt.QWidget):
     # ─── Label Config (called by panel) ──────────────────────────────────
 
     def set_labels(self, labels, create_segments=True):
-        """Receive segmentation class labels from config. Creates segments if volume exists."""
+        """Receive segmentation class labels from config."""
         self._seg_labels = list(labels)
-        if create_segments and self._segmentation_node:
-            self._create_segments_from_config()
+        if not create_segments or not self._seg_labels:
+            return
+
+        if self._segmentation_node is None:
+            self._ensure_segmentation_node(self._volume_node)
+            self._link_editor_to_nodes(self._volume_node)
+            self._start_context_timer()
+        self._create_segments_from_config()
 
     def reconcile_imported_segment_labels(self, seg_labels, label_to_segment_map=None):
         """Associate configured segmentation classes with imported MRML segments."""
@@ -491,7 +527,12 @@ class SegmentationTab(qt.QWidget):
             self._segmentation_node.CreateDefaultDisplayNodes()
             self._segmentation_node.SetName("AnnotationSegmentation")
 
-        self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(volume_node)
+        if volume_node:
+            self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
+                volume_node
+            )
+        else:
+            self._apply_default_reference_geometry()
         self._install_segmentation_observer()
 
         display_node = self._segmentation_node.GetDisplayNode()
@@ -499,6 +540,25 @@ class SegmentationTab(qt.QWidget):
             display_node.SetVisibility(True)
             display_node.SetAllSegmentsVisibility(True)
             display_node.SetOpacity(self._opacity_slider.value / 100.0)
+
+    def _apply_default_reference_geometry(self):
+        """Use a default reference geometry when no source volume is available."""
+        if self._segmentation_node is None:
+            return
+
+        try:
+            import vtk
+
+            direction = vtk.vtkMatrix4x4()
+            direction.Identity()
+            self._segmentation_node.SetReferenceImageGeometryParameter(
+                [256, 256, 256],
+                [1.0, 1.0, 1.0],
+                [0.0, 0.0, 0.0],
+                direction,
+            )
+        except Exception as e:
+            logger.warning(f"Could not set default segmentation reference geometry: {e}")
 
     def _link_editor_to_nodes(self, volume_node):
         """Connect the segment editor widget to the segmentation and volume."""
@@ -533,9 +593,6 @@ class SegmentationTab(qt.QWidget):
     def _on_export(self, fmt):
         if self._segmentation_node is None:
             qt.QMessageBox.warning(self, "No Segmentation", "No segmentation to export.")
-            return
-        if self._volume_node is None:
-            qt.QMessageBox.warning(self, "No Volume", "No source volume loaded.")
             return
 
         if fmt == "nrrd":
@@ -1585,6 +1642,7 @@ class SegmentationTab(qt.QWidget):
                         display_node.SetVisibility(True)
                         display_node.SetAllSegmentsVisibility(True)
                         display_node.SetOpacity(self._opacity_slider.value / 100.0)
+                    self._link_editor_to_nodes(volume_node)
                 except Exception as e:
                     self._last_import_error = str(e)
                     logger.error(f"Failed to load segmentation mask: {e}")
@@ -1595,7 +1653,7 @@ class SegmentationTab(qt.QWidget):
                 )
                 return False
 
-        if self._segmentation_node is None and volume_node:
+        if self._segmentation_node is None:
             self._ensure_segmentation_node(volume_node)
 
         if self._segmentation_node and seg_data.labels:
@@ -1614,15 +1672,8 @@ class SegmentationTab(qt.QWidget):
                     r, g, b = hex_to_rgb_float(lbl.color)
                     segment.SetColor(r, g, b)
 
-        if volume_node:
+        if self._segmentation_node:
             self._link_editor_to_nodes(volume_node)
-        elif self._segmentation_node and self._segment_editor_node is None:
-            self._segment_editor_node = slicer.mrmlScene.AddNewNodeByClass(
-                "vtkMRMLSegmentEditorNode"
-            )
-            self._segment_editor_widget.setMRMLSegmentEditorNode(self._segment_editor_node)
-            self._segment_editor_widget.setSegmentationNode(self._segmentation_node)
-            self._install_segment_editor_observer()
         self._start_context_timer()
 
         self._modification_events = list(seg_data.modification_events or [])
