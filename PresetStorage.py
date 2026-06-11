@@ -135,9 +135,21 @@ def save_preset(name, config_dict):
     if is_preset_name_taken(normalized):
         raise ValueError(f'A preset named "{normalized}" already exists.')
 
-    path = preset_filepath(normalized)
+    return _write_preset_file(normalized, config_dict)
+
+
+def save_preset_overwrite(name, config_dict):
+    """Write a preset JSON file, replacing any existing preset with the same name."""
+    normalized = normalize_preset_name(name)
+    if not normalized:
+        raise ValueError("Preset name is required.")
+    return _write_preset_file(normalized, config_dict)
+
+
+def _write_preset_file(normalized_name, config_dict):
+    path = preset_filepath(normalized_name)
     payload = dict(config_dict)
-    payload["preset_name"] = normalized
+    payload["preset_name"] = normalized_name
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
     return path

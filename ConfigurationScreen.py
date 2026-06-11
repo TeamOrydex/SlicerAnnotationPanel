@@ -417,6 +417,11 @@ class ConfigurationScreen(qt.QWidget):
         self._roi_section.set_labels(config.roi_labels)
         self._seg_section.set_labels(config.segmentation_classes)
 
+    def apply_imported_config(self, config, preset_name):
+        """Load imported label configuration and register it as the active preset."""
+        self._load_preset_config(config, preset_name)
+        self._refresh_preset_combo(select_name=preset_name)
+
     def set_confirm_callback(self, callback):
         """Register a callback invoked when the user confirms. Receives a LabelConfig."""
         self._on_confirm_callback = callback
