@@ -1,13 +1,8 @@
 import qt
 
 from AnnotationModel import ClassLabelAnnotation
+from LabelColors import classification_label_button_stylesheet
 from SliceInfo import capture_all_planes_slice_info, install_slice_tracking
-
-_LABEL_BUTTON_STYLE = (
-    "QPushButton {{ font-size: 11px; padding: 2px 8px; border: 1px solid {color}; "
-    "border-radius: 3px; }}"
-    "QPushButton:checked {{ background-color: #2196F3; color: white; border-color: #1976D2; }}"
-)
 
 
 class ClassLabelTab(qt.QWidget):
@@ -136,7 +131,7 @@ class ClassLabelTab(qt.QWidget):
             btn.setToolTip(label_def.description or label_def.name)
             btn.setFixedHeight(24)
             btn.setSizePolicy(qt.QSizePolicy.Minimum, qt.QSizePolicy.Fixed)
-            btn.setStyleSheet(_LABEL_BUTTON_STYLE.format(color=label_def.color))
+            btn.setStyleSheet(classification_label_button_stylesheet(label_def.color))
             btn.toggled.connect(lambda checked, ld=label_def: self._on_label_button_toggled(ld, checked))
             grid_row, grid_col = divmod(index, columns)
             self._label_button_container.addWidget(btn, grid_row, grid_col)
