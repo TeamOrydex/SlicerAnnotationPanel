@@ -415,3 +415,52 @@ def capture_all_planes_slice_info(volume_node=None):
         if info.get("plane"):
             planes.append(info)
     return planes
+
+
+def find_scene_scalar_volume_nodes():
+    """Return scalar volume nodes currently in the Slicer scene."""
+    try:
+        import slicer
+
+        return list(slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode"))
+    except Exception as e:
+        logger.debug(f"Could not enumerate scene volume nodes: {e}")
+        return []
+
+
+def find_background_volume_from_slice_views():
+    """Return the background volume shown in any slice view, if present."""
+    try:
+        import slicer
+
+        layout_manager = slicer.app.layoutManager()
+        if not layout_manager:
+            return None
+
+        for name in layout_manager.sliceViewNames():
+            slice_widget = layout_manager.sliceWidget(name)
+            if not slice_widget:
+                continue
+            slice_logic = slice_widget.sliceLogic()
+            if not slice_logic:
+                continue
+            volume_node = slice_logic.GetBackgroundLayer()
+            if volume_node and volume_node.IsA("vtkMRMLScalarVolumeNode"):
+                return volume_node
+    except Exception as e:
+        logger.debug(f"Could not read slice background volume: {e}")
+    return None
+
+
+def find_preferred_volume_node(exclude_node_ids=None):
+    """Pick the best available volume for annotation workflows."""
+    exclude_ids = set(exclude_node_ids or [])
+    background = find_background_volume_from_slice_views()
+    if background and background.GetID() not in exclude_ids:
+        return background
+
+    for volume_node in find_scene_scalar_volume_nodes():
+        node_id = volume_node.GetID()
+        if node_id and node_id not in exclude_ids:
+            return volume_node
+    return None
