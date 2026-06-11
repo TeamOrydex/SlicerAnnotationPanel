@@ -570,6 +570,7 @@ class ROIAnnotation:
     center_ras: list = field(default_factory=list)
     center_voxel_ijk: list = field(default_factory=list)
     transform_handles_enabled: bool = False
+    visible: bool = True
 
     def normalize_geometry_fields(self):
         """Keep derived geometry fields consistent before export."""
