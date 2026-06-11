@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
+import os
 import uuid
 import json
 from datetime import datetime, timezone
@@ -21,6 +22,53 @@ def _resolve_slice_index(plane, data: dict) -> int:
     return slice_index
 
 ANNOTATION_SCHEMA_VERSION = "1.1.0"
+
+EXPORT_ANNOTATIONS_FILENAME = "annotations.json"
+EXPORT_SEGMENTATION_FILENAME = "segmentation.nii.gz"
+
+
+def _sanitize_export_folder_name(name: str) -> str:
+    from PresetStorage import sanitize_preset_filename
+
+    try:
+        return sanitize_preset_filename(name)
+    except ValueError:
+        return ""
+
+
+def derive_export_folder_name(record: "AnnotationRecord") -> str:
+    """Choose a scan-specific export subfolder name from available metadata."""
+    candidates = []
+    if record.scan:
+        if record.scan.filename:
+            candidates.append(os.path.splitext(record.scan.filename)[0])
+        if record.scan.volume_name:
+            candidates.append(record.scan.volume_name)
+    if record.study_id:
+        candidates.append(record.study_id)
+    if record.series_id:
+        candidates.append(record.series_id)
+
+    for candidate in candidates:
+        safe = _sanitize_export_folder_name(candidate)
+        if safe:
+            return safe
+
+    return f"scan-{record.id[:8]}"
+
+
+def resolve_unique_export_subdirectory(parent_dir: str, folder_name: str) -> str:
+    """Return a non-existing path under parent_dir, appending _2, _3, ... if needed."""
+    path = os.path.join(parent_dir, folder_name)
+    if not os.path.exists(path):
+        return path
+
+    counter = 2
+    while True:
+        candidate = os.path.join(parent_dir, f"{folder_name}_{counter}")
+        if not os.path.exists(candidate):
+            return candidate
+        counter += 1
 
 
 def _get_slicer_version():
@@ -897,9 +945,26 @@ class AnnotationRecord:
             segmentation=segmentation,
         )
 
+    def to_export_dict(self) -> dict:
+        """Serialize for formal export: classification and ROI in JSON, not segmentation."""
+        payload = self.to_dict()
+        payload.pop("segmentation", None)
+        return payload
+
     def to_json(self, indent=2) -> str:
         return json.dumps(self.to_dict(), indent=indent)
+
+    def to_export_json(self, indent=2) -> str:
+        return json.dumps(self.to_export_dict(), indent=indent)
 
     @classmethod
     def from_json(cls, json_str: str) -> "AnnotationRecord":
         return cls.from_dict(json.loads(json_str))
+
+    @classmethod
+    def segmentation_volume_path_for_annotation_file(cls, annotation_filepath: str) -> str:
+        """Return the sibling segmentation NIfTI path for an exported annotations.json."""
+        return os.path.join(
+            os.path.dirname(annotation_filepath),
+            EXPORT_SEGMENTATION_FILENAME,
+        )
