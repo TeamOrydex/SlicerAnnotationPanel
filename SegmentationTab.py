@@ -3,6 +3,7 @@ Segmentation tab: pixel-level painting using Slicer's Segment Editor.
 Embeds qMRMLSegmentEditorWidget with export controls and opacity adjustment.
 The source volume and segment classes are set externally by the panel.
 """
+import os
 import qt
 import slicer
 import logging
@@ -169,6 +170,7 @@ class SegmentationTab(qt.QWidget):
         self._recorded_modification_mtimes = {}
         self._effect_params_by_name = {}
         self._context_timer = None
+        self._last_export_error = ""
         self._segment_editor_observer = None
         self._editor_slice_observers = []
         self._setup_ui()
@@ -461,23 +463,90 @@ class SegmentationTab(qt.QWidget):
             self._last_export_filepath = filepath
             self._last_export_format = fmt
 
+    def _export_segments_to_labelmap(self, labelmap_node):
+        """Export segmentation segments into a labelmap aligned to the source volume."""
+        logic = slicer.modules.segmentations.logic()
+        self._segmentation_node.SetReferenceImageGeometryParameterFromVolumeNode(
+            self._volume_node
+        )
+
+        extent_mode = getattr(
+            slicer.vtkSegmentation, "EXTENT_REFERENCE_GEOMETRY", None
+        )
+        if extent_mode is not None:
+            exported = logic.ExportAllSegmentsToLabelmapNode(
+                self._segmentation_node, labelmap_node, extent_mode
+            )
+            if exported:
+                return True
+
+        exported = logic.ExportAllSegmentsToLabelmapNode(
+            self._segmentation_node, labelmap_node
+        )
+        if exported:
+            return True
+
+        if hasattr(logic, "ExportVisibleSegmentsToLabelmapNode"):
+            return logic.ExportVisibleSegmentsToLabelmapNode(
+                self._segmentation_node, labelmap_node, self._volume_node
+            )
+
+        return False
+
     def export_mask_to_file(self, filepath, fmt="nrrd"):
         """Export the segmentation labelmap to a file. Returns True on success."""
         if self._segmentation_node is None or self._volume_node is None:
+            self._last_export_error = "Segmentation or source volume is not available."
             return False
 
-        labelmap_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+        labelmap_node = None
+        scalar_node = None
+        self._last_export_error = ""
         try:
-            slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(
-                self._segmentation_node, labelmap_node, self._volume_node
-            )
-            slicer.util.saveNode(labelmap_node, filepath)
+            labelmap_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLabelMapVolumeNode")
+            exported = self._export_segments_to_labelmap(labelmap_node)
+            if not exported:
+                self._last_export_error = "Could not export segmentation segments to a labelmap."
+                return False
+
+            export_path = filepath
+            if fmt == "nifti":
+                if not export_path.lower().endswith((".nii", ".nii.gz")):
+                    export_path = f"{export_path}.nii.gz"
+                scalar_node = self._labelmap_as_scalar_volume(labelmap_node)
+                slicer.util.saveNode(scalar_node, export_path)
+            else:
+                slicer.util.saveNode(labelmap_node, export_path)
+
+            if not os.path.exists(export_path):
+                self._last_export_error = f"Export file was not created: {export_path}"
+                return False
             return True
         except Exception as e:
+            self._last_export_error = str(e)
             logger.error(f"Export failed: {e}")
             return False
         finally:
-            slicer.mrmlScene.RemoveNode(labelmap_node)
+            if scalar_node is not None:
+                slicer.mrmlScene.RemoveNode(scalar_node)
+            if labelmap_node is not None:
+                slicer.mrmlScene.RemoveNode(labelmap_node)
+
+    def _labelmap_as_scalar_volume(self, labelmap_node):
+        """Copy a labelmap into a scalar volume node so NIfTI writers can persist it."""
+        import vtk
+
+        scalar_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
+        scalar_node.SetName(labelmap_node.GetName())
+        scalar_node.SetSpacing(labelmap_node.GetSpacing())
+        scalar_node.SetOrigin(labelmap_node.GetOrigin())
+        ijk_to_ras = vtk.vtkMatrix4x4()
+        labelmap_node.GetIJKToRASMatrix(ijk_to_ras)
+        scalar_node.SetIJKToRASMatrix(ijk_to_ras)
+        image_data = vtk.vtkImageData()
+        image_data.DeepCopy(labelmap_node.GetImageData())
+        scalar_node.SetAndObserveImageData(image_data)
+        return scalar_node
 
     # ─── Modification tracking ───────────────────────────────────────────
 
