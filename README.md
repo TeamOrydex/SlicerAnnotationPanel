@@ -79,8 +79,6 @@ Each export includes:
 - **Classification labels** with category id/color, plane, slice geometry, RAS/IJK position
 - **Regions of interest** with geometry type, control points, orientation, MRML node references
 
-Legacy keys (`scan`, `class_labels`, `rois`, etc.) are also included for backward compatibility.
-
 | Concept | Primary export key |
 |---------|-------------------|
 | Image series metadata | `series_metadata` |

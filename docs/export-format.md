@@ -55,8 +55,9 @@ Primary keys:
 | Regions of interest | `regions_of_interest` |
 | Segmentation metadata | `segmentation` |
 
-Legacy aliases (`label_config`, `scan`, `class_labels`, `rois`) are still
-written for backward compatibility.
+Formal export writes **canonical keys only**. Import still accepts legacy
+aliases (`label_config`, `scan`, `class_labels`, `rois`) from older export
+files and draft JSON saves.
 
 ### Creation timestamps
 
