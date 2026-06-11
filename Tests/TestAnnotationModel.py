@@ -18,6 +18,9 @@ from AnnotationModel import (
     reconcile_imported_record, derive_import_preset_name,
     label_configs_differ,
     segment_label_def_for_label_value,
+    imported_segments_have_export_label_values,
+    label_config_id_for_export_label_value,
+    label_config_id_for_imported_segment_name,
     utc_iso_timestamp,
     EXPORT_ANNOTATIONS_FILENAME, EXPORT_SEGMENTATION_FILENAME,
     EXPORT_SEGMENTATION_NRRD_FILENAME, EXPORT_SEGMENTATION_SEG_NRRD_FILENAME,
@@ -798,6 +801,28 @@ class TestSegmentLabel(unittest.TestCase):
         restored = SegmentLabel.from_dict(d)
         self.assertEqual(restored.name, "Necrosis")
         self.assertEqual(restored.color, "#800080")
+
+    def test_export_dict_includes_export_label_value(self):
+        lbl = SegmentLabel(
+            name="Infarct",
+            segment_id="Segment_3",
+            label_config_id="infarct-id",
+            export_label_value=3,
+        )
+        exported = lbl.to_export_dict()
+        self.assertEqual(exported["export_label_value"], 3)
+        self.assertEqual(exported["label_config_id"], "infarct-id")
+
+    def test_from_dict_restores_export_label_value(self):
+        restored = SegmentLabel.from_dict(
+            {
+                "name": "Infarct",
+                "segment_id": "Segment_3",
+                "label_config_id": "infarct-id",
+                "export_label_value": 3,
+            }
+        )
+        self.assertEqual(restored.export_label_value, 3)
 
 
 class TestSegmentationData(unittest.TestCase):
@@ -1824,9 +1849,10 @@ class TestImportResolution(unittest.TestCase):
         self.assertEqual(record.segmentation.labels[0].name, "Spleen")
         self.assertEqual(record.segmentation.labels[0].color, "#8b4513")
         self.assertEqual(
-            record.segmentation.label_to_segment_map["f95fa81a-296e-42b8-ad57-1445465aeea1"],
-            "Segment_1",
+            record.segmentation.labels[0].label_config_id,
+            "f95fa81a-296e-42b8-ad57-1445465aeea1",
         )
+        self.assertEqual(record.segmentation.label_to_segment_map, {})
 
     def test_build_record_reads_label_configuration_export_keys(self):
         payload = {
@@ -1908,6 +1934,114 @@ class TestImportResolution(unittest.TestCase):
         self.assertEqual(segment_label_def_for_label_value(3, seg_labels).name, "Infarct")
         self.assertIsNone(segment_label_def_for_label_value(0, seg_labels))
         self.assertIsNone(segment_label_def_for_label_value(4, seg_labels))
+
+
+class TestSegmentLabelIdentityMapping(unittest.TestCase):
+    """Tests for persistent segmentation identity across export/import."""
+
+    def _screen_lesion_infarct_segments(self):
+        return [
+            SegmentLabel(
+                name="Screen",
+                label_config_id="screen-id",
+                export_label_value=1,
+            ),
+            SegmentLabel(
+                name="Lesion",
+                label_config_id="lesion-id",
+                export_label_value=2,
+            ),
+            SegmentLabel(
+                name="Infarct",
+                label_config_id="infarct-id",
+                export_label_value=3,
+            ),
+        ]
+
+    def test_label_config_id_for_export_label_value_skipped_middle_class(self):
+        """Painted Screen + Infarct keeps Infarct identity when value 3 is non-contiguous."""
+        imported = [
+            SegmentLabel(
+                name="Screen",
+                label_config_id="screen-id",
+                export_label_value=1,
+            ),
+            SegmentLabel(
+                name="Infarct",
+                label_config_id="infarct-id",
+                export_label_value=3,
+            ),
+        ]
+        self.assertEqual(
+            label_config_id_for_export_label_value(1, imported),
+            "screen-id",
+        )
+        self.assertEqual(
+            label_config_id_for_export_label_value(3, imported),
+            "infarct-id",
+        )
+        self.assertIsNone(label_config_id_for_export_label_value(2, imported))
+
+    def test_label_config_id_for_export_label_value_rejects_ambiguous_values(self):
+        imported = [
+            SegmentLabel(name="A", label_config_id="a-id", export_label_value=2),
+            SegmentLabel(name="B", label_config_id="b-id", export_label_value=2),
+        ]
+        self.assertIsNone(label_config_id_for_export_label_value(2, imported))
+
+    def test_label_config_id_for_imported_segment_name(self):
+        imported = self._screen_lesion_infarct_segments()
+        self.assertEqual(
+            label_config_id_for_imported_segment_name("Infarct", imported),
+            "infarct-id",
+        )
+        self.assertIsNone(label_config_id_for_imported_segment_name("Missing", imported))
+
+    def test_imported_segments_have_export_label_values(self):
+        self.assertFalse(imported_segments_have_export_label_values([]))
+        self.assertFalse(
+            imported_segments_have_export_label_values(
+                [SegmentLabel(name="Screen", label_config_id="screen-id")]
+            )
+        )
+        self.assertTrue(
+            imported_segments_have_export_label_values(
+                [SegmentLabel(name="Screen", label_config_id="screen-id", export_label_value=1)]
+            )
+        )
+
+    def test_metadata_mapping_beats_index_fallback_for_skipped_class(self):
+        """Value 3 must not map to config index 2 when metadata says Infarct owns 3."""
+        imported = [
+            SegmentLabel(name="Screen", label_config_id="screen-id", export_label_value=1),
+            SegmentLabel(name="Infarct", label_config_id="infarct-id", export_label_value=3),
+        ]
+        seg_labels = [
+            LabelDefinition(id="screen-id", name="Screen", color="#000000"),
+            LabelDefinition(id="lesion-id", name="Lesion", color="#111111"),
+            LabelDefinition(id="infarct-id", name="Infarct", color="#222222"),
+        ]
+        self.assertEqual(
+            label_config_id_for_export_label_value(3, imported),
+            "infarct-id",
+        )
+        self.assertEqual(
+            segment_label_def_for_label_value(3, seg_labels).name,
+            "Infarct",
+        )
+        reordered_labels = [
+            LabelDefinition(id="screen-id", name="Screen", color="#000000"),
+            LabelDefinition(id="infarct-id", name="Infarct", color="#222222"),
+            LabelDefinition(id="lesion-id", name="Lesion", color="#111111"),
+        ]
+        self.assertEqual(
+            label_config_id_for_export_label_value(3, imported),
+            "infarct-id",
+        )
+        self.assertEqual(
+            segment_label_def_for_label_value(3, reordered_labels).name,
+            "Lesion",
+        )
 
 
 class TestBackwardCompatibility(unittest.TestCase):
