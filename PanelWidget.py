@@ -3,7 +3,17 @@ import qt
 import json
 import slicer
 
-from AnnotationModel import AnnotationRecord, ScanMetadata, LabelConfig, ClassLabelAnnotation
+from AnnotationModel import (
+    AnnotationRecord,
+    ScanMetadata,
+    LabelConfig,
+    ClassLabelAnnotation,
+    SegmentationData,
+    derive_export_folder_name,
+    resolve_unique_export_subdirectory,
+    EXPORT_ANNOTATIONS_FILENAME,
+    EXPORT_SEGMENTATION_FILENAME,
+)
 from PresetStorage import preset_name_key
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
@@ -566,6 +576,14 @@ class AnnotationPanelRootWidget(qt.QWidget):
             data = json.load(f)
         record = AnnotationRecord.from_dict(data)
 
+        if record.segmentation is None:
+            nifti_path = AnnotationRecord.segmentation_volume_path_for_annotation_file(filepath)
+            if os.path.exists(nifti_path):
+                record.segmentation = SegmentationData(
+                    export_filepath=nifti_path,
+                    export_format="nifti",
+                )
+
         # Restore label configuration
         if record.label_config:
             self._label_config = record.label_config
@@ -641,27 +659,39 @@ class AnnotationPanelRootWidget(qt.QWidget):
             )
             return
 
-        export_dir = qt.QFileDialog.getExistingDirectory(
+        parent_export_dir = qt.QFileDialog.getExistingDirectory(
             self, "Select Export Folder"
         )
-        if not export_dir:
+        if not parent_export_dir:
             return
+
+        folder_name = derive_export_folder_name(self._record)
+        export_dir = resolve_unique_export_subdirectory(parent_export_dir, folder_name)
+        os.makedirs(export_dir, exist_ok=True)
 
         exported_files = []
 
-        annotation_path = os.path.join(export_dir, "annotation.json")
-
-        # segmentation.nrrd (optional voxel mask alongside annotation.json)
-        if has_seg:
-            seg_path = os.path.join(export_dir, "segmentation.nrrd")
-            success = self._segmentation_tab.export_mask_to_file(seg_path, "nrrd")
-            if success:
-                self._record.segmentation.export_filepath = seg_path
-                exported_files.append("segmentation.nrrd")
-
+        annotation_path = os.path.join(export_dir, EXPORT_ANNOTATIONS_FILENAME)
         with open(annotation_path, "w") as f:
-            f.write(self._record.to_json())
-        exported_files.insert(0, "annotation.json")
+            f.write(self._record.to_export_json())
+        exported_files.append(EXPORT_ANNOTATIONS_FILENAME)
+
+        if has_seg:
+            seg_path = os.path.join(export_dir, EXPORT_SEGMENTATION_FILENAME)
+            success = self._segmentation_tab.export_mask_to_file(seg_path, "nifti")
+            if success:
+                exported_files.append(EXPORT_SEGMENTATION_FILENAME)
+            else:
+                error_detail = getattr(
+                    self._segmentation_tab, "_last_export_error", ""
+                ) or "Unknown error."
+                qt.QMessageBox.warning(
+                    self,
+                    "Segmentation Export Failed",
+                    "Classification and ROI annotations were exported, but the "
+                    "segmentation NIfTI volume could not be written.\n\n"
+                    f"Details: {error_detail}",
+                )
 
         qt.QMessageBox.information(
             self, "Export Complete",
