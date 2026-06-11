@@ -100,6 +100,71 @@ def normalize_hex_color(color):
     return f"#{text.lower()}"
 
 
+def _hex_to_rgb_channels(color):
+    """Return normalized 0-255 RGB channels, or None if invalid."""
+    normalized = normalize_hex_color(color)
+    if not normalized:
+        return None
+    return (
+        int(normalized[1:3], 16),
+        int(normalized[3:5], 16),
+        int(normalized[5:7], 16),
+    )
+
+
+def relative_luminance(color):
+    """WCAG relative luminance for a hex color (0.0–1.0)."""
+    channels = _hex_to_rgb_channels(color)
+    if channels is None:
+        return 0.0
+
+    def linearize(value):
+        channel = value / 255.0
+        if channel <= 0.03928:
+            return channel / 12.92
+        return ((channel + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = (linearize(value) for value in channels)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def contrast_text_color(background_color, light="#ffffff", dark="#1a1a1a"):
+    """Return a readable text color for the given background hex color."""
+    normalized = normalize_hex_color(background_color)
+    if not normalized:
+        normalized = normalize_hex_color(DEFAULT_LABEL_COLOR)
+
+    # Heuristic used by common color libraries for light/dark text on arbitrary backgrounds.
+    if (relative_luminance(normalized) + 0.05) ** 2 > 0.15:
+        return dark
+    return light
+
+
+def darken_hex_color(color, factor=0.82):
+    """Return a slightly darkened copy of a hex color for borders and accents."""
+    channels = _hex_to_rgb_channels(color)
+    if channels is None:
+        return normalize_hex_color(DEFAULT_LABEL_COLOR) or DEFAULT_LABEL_COLOR
+    red, green, blue = channels
+    scale = max(0.0, min(1.0, factor))
+    return (
+        f"#{int(red * scale):02x}{int(green * scale):02x}{int(blue * scale):02x}"
+    )
+
+
+def classification_label_button_stylesheet(label_color):
+    """Build stylesheet for a checkable classification label button."""
+    color = normalize_hex_color(label_color) or normalize_hex_color(DEFAULT_LABEL_COLOR)
+    text_color = contrast_text_color(color)
+    border_color = darken_hex_color(color)
+    return (
+        f"QPushButton {{ font-size: 11px; padding: 2px 8px; border: 1px solid {color}; "
+        f"border-radius: 3px; }}"
+        f"QPushButton:checked {{ background-color: {color}; color: {text_color}; "
+        f"border-color: {border_color}; }}"
+    )
+
+
 def _generated_distinct_color(index):
     hue = (index * 0.618033988749895) % 1.0
     red, green, blue = colorsys.hls_to_rgb(hue, 0.5, 0.65)
