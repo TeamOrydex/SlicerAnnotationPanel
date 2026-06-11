@@ -111,8 +111,8 @@ When segmentation annotations exist, formal export also writes a trimmed
 
 | Key | Purpose |
 |-----|---------|
-| `segments` | Per-segment metadata (`id`, `name`, `segment_id`, `label_config_id`, `created_at`) |
-| `label_to_segment_map` | Maps configured label ids to MRML segment ids |
+| `segments` | Per-segment metadata (`id`, `name`, `segment_id`, `label_config_id`, `export_label_value`, `created_at`) |
+| `label_to_segment_map` | Maps configured label ids to MRML segment ids (session-only; rebuilt on import) |
 
 Modification events, spatial extent, and voxel counts are omitted from formal
 export to keep the JSON compact. Full segmentation metadata remains available in
@@ -153,7 +153,7 @@ colors, and ROI drawing tools).
 | `label_configuration` | Active preset (saved as `Import-<scan-name>`) and all three label tables when configuration is replaced |
 | `classification_labels` | Classification tab (mapped by `category_id`; `created_at` preserved) |
 | `regions_of_interest` | ROI tab and MRML markup nodes (mapped by `category_id`; `created_at` preserved) |
-| `segmentation` | Segment `created_at` and `label_to_segment_map` (mapped onto imported MRML segments) |
+| `segmentation` | Segment `created_at`, `label_config_id`, and `export_label_value` (mapped onto imported MRML segments) |
 | `segmentation.seg.nrrd` | Segmentation tab (names and colors preserved) |
 | `segmentation.nii.gz` or `segmentation.nrrd` | Segmentation tab (label values mapped to `segment_labels` order) |
 
@@ -170,12 +170,25 @@ JSON config sync onto imported annotations using stable label ids.
 
 ### Segmentation label mapping
 
-Plain labelmap exports (`segmentation.nii.gz`, `segmentation.nrrd`) use values
-`1`, `2`, `3`, … in the same order as `segment_labels` in `label_configuration`.
-On import, each value maps back to the corresponding configured class. Missing
-classes are added as empty segments.
+Segment identity is keyed by **`label_config_id`** (stable label id from
+`label_configuration.segment_labels`), not by array position or UI order.
 
-`segmentation.seg.nrrd` carries segment names and colors in the file itself.
+Each exported segment may include **`export_label_value`**: the labelmap voxel
+value for that segment at export time. On import, MRML segments are matched to
+configured classes using, in order:
+
+1. Live MRML segment id (when still valid in the scene)
+2. `export_label_value` + `label_config_id` from `segmentation.segments`
+3. Unique segment name from exported metadata
+4. Legacy index fallback (`value N` → `segment_labels[N-1]`) only when exported
+   metadata has no `export_label_value` fields
+
+Plain labelmap exports (`segmentation.nii.gz`, `segmentation.nrrd`) write values
+`1`, `2`, `3`, … in configured label order before export. Missing classes are
+added as empty segments on import.
+
+`segmentation.seg.nrrd` carries segment names and colors in the file itself and
+loads via Slicer's native segmentation reader.
 
 ### Draft files
 
