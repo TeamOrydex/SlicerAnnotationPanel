@@ -25,6 +25,18 @@ ROI_GEOMETRY_TYPES = {
     "rectangle_2d": "Bounding Box 2D",
 }
 
+# Toolbar / configuration drawing tools (subset of ROI_GEOMETRY_TYPES with active UI support).
+ROI_DRAWING_TOOLS = (
+    ("rectangle_2d", "Bounding Box 2D"),
+    ("rectangle_3d", "Bounding Box"),
+    ("polygon", "Polygon Contour"),
+    ("freehand_curve", "Freehand Contour"),
+    ("line", "Linear Measurement"),
+)
+
+ROI_DRAWING_TOOL_IDS = frozenset(tool_id for tool_id, _ in ROI_DRAWING_TOOLS)
+DEFAULT_ROI_DRAWING_TOOL = "rectangle_3d"
+
 
 def slice_view_to_plane(slice_view):
     """Convert a Slicer slice view name to a standard anatomical plane label."""
@@ -59,3 +71,27 @@ def roi_geometry_type_from_export(value):
         if label == value:
             return roi_type
     return value
+
+
+def drawing_tool_display_name(tool_id):
+    """Return the UI label for a configured ROI drawing tool id."""
+    for tid, label in ROI_DRAWING_TOOLS:
+        if tid == tool_id:
+            return label
+    return ROI_GEOMETRY_TYPES.get(tool_id, tool_id or "")
+
+
+def normalize_drawing_tool(value):
+    """Normalize a preset or export value to an internal drawing tool id."""
+    if not value:
+        return ""
+    if value in ROI_DRAWING_TOOL_IDS:
+        return value
+    if value == "rectangle":
+        return "rectangle_3d"
+    resolved = roi_geometry_type_from_export(value)
+    if resolved in ROI_DRAWING_TOOL_IDS:
+        return resolved
+    if resolved == "rectangle":
+        return "rectangle_3d"
+    return ""
