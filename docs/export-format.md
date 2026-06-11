@@ -67,15 +67,46 @@ produced from all configured segmentation classes.
 
 ## Import behavior
 
-Loading `annotations.json` from an export folder will automatically discover a
-sibling `segmentation.nii.gz` when segmentation metadata is absent from JSON.
+Use **Import Annotations** in the panel action bar. You can select:
 
-Older draft files named `annotation.json` that embed segmentation metadata in
-JSON continue to load as before.
+- An **export folder** containing `annotations.json` and optional `segmentation.nii.gz`
+- A single **`annotations.json`** file (sibling `segmentation.nii.gz` is discovered automatically)
+
+Import does **not** require a loaded scan. Annotations restore into the active
+session whether or not a series is loaded.
+
+### What is restored
+
+| Source | Restored into |
+|--------|----------------|
+| `label_configuration` | Active preset (saved as `Import-<scan-name>`) and all three label tables |
+| `classification_labels` | Classification tab (mapped by `category_id`) |
+| `regions_of_interest` | ROI tab and MRML markup nodes (mapped by `category_id`) |
+| `segmentation.nii.gz` | Segmentation tab (label values mapped to `segment_labels` order) |
+
+`label_configuration` is authoritative: names, colors, and descriptions from the
+JSON config sync onto imported annotations using stable label ids.
+
+### Partial import
+
+| Situation | Behavior |
+|-----------|----------|
+| `annotations.json` missing, NIfTI present | Segmentation loads; warning shown |
+| NIfTI missing, JSON present | Classification and ROI load; warning shown |
+| Invalid JSON | Error dialog; no crash |
+
+### Segmentation label mapping
+
+Exported NIfTI uses labelmap values `1`, `2`, `3`, … in the same order as
+`segment_labels` in `label_configuration`. On import, each value maps back to
+the corresponding configured class. Missing classes are added as empty segments.
+
+### Draft files
+
+Older draft JSON files that embed segmentation metadata in JSON (instead of a
+sibling NIfTI) continue to load through the same import path.
 
 ## Follow-up work
 
-- Validate imported NIfTI label values against configured segmentation classes
-  when label configuration is present.
 - Optional explicit `segmentation_volume` reference field in export JSON for
   downstream tooling that cannot rely on sibling filename conventions.
