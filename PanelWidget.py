@@ -148,13 +148,13 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._tab_widget.addTab(self._segmentation_tab, "Segmentation")
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
-        ann_layout.addWidget(self._tab_widget)
+        ann_layout.addWidget(self._tab_widget, 1)
 
         self._stacked_widget.addWidget(self._annotation_area)
 
         # Start on config screen
         self._stacked_widget.setCurrentIndex(0)
-        parent_layout.addWidget(self._stacked_widget)
+        parent_layout.addWidget(self._stacked_widget, 1)
 
     def _build_action_bar(self, parent_layout):
         separator = qt.QFrame()
@@ -163,15 +163,18 @@ class AnnotationPanelRootWidget(qt.QWidget):
         parent_layout.addWidget(separator)
 
         btn_layout = qt.QHBoxLayout()
+        btn_layout.setContentsMargins(0, 2, 0, 2)
+        btn_layout.setSpacing(6)
 
         self._save_draft_btn = qt.QPushButton("Save Draft")
+        self._save_draft_btn.setStyleSheet("QPushButton { padding: 4px 10px; }")
         self._save_draft_btn.clicked.connect(self._on_save_draft)
         btn_layout.addWidget(self._save_draft_btn)
 
         self._export_btn = qt.QPushButton("Export Annotations")
         self._export_btn.setStyleSheet(
             "QPushButton { background-color: #2196F3; color: white; "
-            "padding: 6px 16px; border-radius: 3px; }"
+            "padding: 4px 10px; border-radius: 3px; }"
         )
         self._export_btn.clicked.connect(self._on_export)
         btn_layout.addWidget(self._export_btn)
