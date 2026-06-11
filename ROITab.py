@@ -40,6 +40,21 @@ EXTENDABLE_ROI_TYPES = frozenset({"polygon", "freehand_curve", "line"})
 
 ROI_VISIBILITY_ICON_VISIBLE = "\U0001F441"
 ROI_VISIBILITY_ICON_HIDDEN = "\U0001F648"
+ROI_DELETE_ICON = "\U0001F5D1"
+ROI_MOVE_ICON = "\u2725"
+
+ROI_ACTION_BUTTON_STYLE = (
+    "QPushButton { border: none; font-size: 14px; }"
+    " QPushButton:hover { background: #E3F2FD; border-radius: 4px; }"
+)
+ROI_DELETE_BUTTON_STYLE = (
+    "QPushButton { border: none; font-size: 14px; color: #c62828; }"
+    " QPushButton:hover { background: #FFEBEE; border-radius: 4px; }"
+)
+ROI_MOVE_BUTTON_STYLE = (
+    ROI_ACTION_BUTTON_STYLE
+    + " QPushButton:checked { background-color: #2196F3; color: white; border-radius: 4px; }"
+)
 
 
 def hex_to_rgb_float(hex_color):
@@ -1629,11 +1644,43 @@ class ROITab(qt.QWidget):
         btn = qt.QPushButton(self._visibility_icon(roi.visible))
         btn.setFixedSize(24, 24)
         btn.setToolTip(self._visibility_tooltip(roi.visible))
-        btn.setStyleSheet(
-            "QPushButton { border: none; font-size: 14px; }"
-            " QPushButton:hover { background: #E3F2FD; border-radius: 4px; }"
-        )
+        btn.setStyleSheet(ROI_ACTION_BUTTON_STYLE)
         btn.clicked.connect(lambda _checked=False, r=row: self._toggle_roi_visibility(r))
+        return btn
+
+    def _make_move_button(self, row, roi):
+        enabled = bool(roi.transform_handles_enabled)
+        btn = qt.QPushButton(ROI_MOVE_ICON)
+        btn.setCheckable(True)
+        btn.setFixedSize(24, 24)
+        btn.blockSignals(True)
+        btn.setChecked(enabled)
+        btn.blockSignals(False)
+        btn.setToolTip(
+            "Hide move/rotate handles for this ROI"
+            if enabled
+            else "Show move/rotate handles for this ROI"
+        )
+        btn.setStyleSheet(ROI_MOVE_BUTTON_STYLE)
+        btn.toggled.connect(
+            lambda checked, target=roi: self._on_roi_transform_handles_toggled(target, checked)
+        )
+        return btn
+
+    def _make_delete_button(self, row):
+        btn = qt.QPushButton(ROI_DELETE_ICON)
+        btn.setFixedSize(24, 24)
+        btn.setToolTip("Delete this ROI")
+        btn.setStyleSheet(ROI_DELETE_BUTTON_STYLE)
+        btn.clicked.connect(lambda _checked=False, r=row: self._on_delete_roi(r))
+        return btn
+
+    def _make_extend_button(self, row):
+        btn = qt.QPushButton("\u270E")
+        btn.setFixedSize(24, 24)
+        btn.setToolTip("Extend from the latest control point")
+        btn.setStyleSheet(ROI_ACTION_BUTTON_STYLE)
+        btn.clicked.connect(lambda _checked=False, r=row: self._begin_extend_roi(r))
         return btn
 
     def _configure_markup_display(self, display_node, transform_handles=False, visible=True):
@@ -1745,29 +1792,12 @@ class ROITab(qt.QWidget):
             action_layout.setSpacing(2)
 
             action_layout.addWidget(self._make_visibility_button(row, roi))
-
-            delete_btn = qt.QPushButton("\u2715")
-            delete_btn.setFixedSize(24, 24)
-            delete_btn.setToolTip("Delete this ROI")
-            delete_btn.clicked.connect(lambda checked, r=row: self._on_delete_roi(r))
-            action_layout.addWidget(delete_btn)
+            action_layout.addWidget(self._make_move_button(row, roi))
 
             if self._is_extendable(roi):
-                extend_btn = qt.QPushButton("\u270E")
-                extend_btn.setFixedSize(24, 24)
-                extend_btn.setToolTip("Extend from the latest control point")
-                extend_btn.clicked.connect(lambda checked, r=row: self._begin_extend_roi(r))
-                action_layout.addWidget(extend_btn)
+                action_layout.addWidget(self._make_extend_button(row))
 
-            handles_cb = qt.QCheckBox("Move")
-            handles_cb.setToolTip("Show move/rotate handles for this ROI")
-            handles_cb.blockSignals(True)
-            handles_cb.setChecked(roi.transform_handles_enabled)
-            handles_cb.blockSignals(False)
-            handles_cb.toggled.connect(
-                lambda checked, target=roi: self._on_roi_transform_handles_toggled(target, checked)
-            )
-            action_layout.addWidget(handles_cb)
+            action_layout.addWidget(self._make_delete_button(row))
 
             self._table.setCellWidget(row, 1, action_widget)
 
