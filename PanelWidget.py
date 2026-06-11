@@ -202,7 +202,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if result != qt.QMessageBox.Yes:
             return
         self._config_screen.load_config(self._label_config)
-        self._config_screen.set_current_preset_name(self._active_preset_name)
+        self._config_screen.restore_saved_preset_state(self._active_preset_name)
         self._stacked_widget.setCurrentIndex(0)
 
     def _push_labels_to_tabs(self, config, old_config=None):
