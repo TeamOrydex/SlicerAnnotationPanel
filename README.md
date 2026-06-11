@@ -25,14 +25,28 @@ AnnotationPanel/
 
 ## Export terminology
 
-Exports are intentionally verbose so downstream tools can simplify as needed. Each export includes:
+Formal export writes a **scan-specific folder** under the directory you choose:
+
+```text
+<export-directory>/
+└── <scan-name>/
+    ├── annotations.json
+    └── segmentation.nii.gz   # when segmentation annotations exist
+```
+
+`annotations.json` contains classification labels, ROIs, label configuration, and series metadata. Segmentation voxel data is exported separately as `segmentation.nii.gz`, not embedded in the JSON.
+
+Draft saves (`Save Draft`) still write a single JSON file and may include segmentation metadata for in-progress work.
+
+See [docs/export-format.md](docs/export-format.md) for folder naming, file contents, and import behavior.
+
+Each export includes:
 
 - **Schema version** and **export timestamp**
 - **Full label configuration** snapshot
 - **Series metadata** including DICOM UIDs, pixel spacing, IJK→RAS matrix, window/level
 - **Classification labels** with category id/color, plane, slice geometry, RAS/IJK position
 - **Regions of interest** with geometry type, control points, orientation, MRML node references
-- **Segmentation** with segment ids, voxel counts, and label-to-segment mapping
 
 Legacy keys (`scan`, `class_labels`, `rois`, etc.) are also included for backward compatibility.
 
@@ -41,6 +55,7 @@ Legacy keys (`scan`, `class_labels`, `rois`, etc.) are also included for backwar
 | Image series metadata | `series_metadata` |
 | Classification labels | `classification_labels` |
 | Regions of interest | `regions_of_interest` |
+| Segmentation volume | `segmentation.nii.gz` (sibling file) |
 | Anatomical planes | `Axial`, `Coronal`, `Sagittal` |
 
 ## Installation
