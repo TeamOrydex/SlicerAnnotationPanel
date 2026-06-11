@@ -163,3 +163,15 @@ def load_preset(name):
         raise FileNotFoundError(f'Preset "{name}" not found.')
     with open(path, "r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def delete_preset(name):
+    """Remove a preset JSON file from disk. Raises FileNotFoundError when missing."""
+    resolved = find_preset_name(name)
+    if not resolved:
+        raise FileNotFoundError(f'Preset "{name}" not found.')
+    path = preset_filepath(resolved)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'Preset "{name}" not found.')
+    os.remove(path)
+    return path

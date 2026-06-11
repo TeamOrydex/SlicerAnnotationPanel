@@ -1176,6 +1176,39 @@ class TestPresetStorage(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.storage.save_preset("   ", {})
 
+    def test_delete_preset_removes_file(self):
+        payload = {"classification_labels": [], "roi_categories": [], "segment_labels": []}
+        path = self.storage.save_preset("To Delete", payload)
+        self.assertTrue(os.path.isfile(path))
+        deleted_path = self.storage.delete_preset("To Delete")
+        self.assertEqual(deleted_path, path)
+        self.assertFalse(os.path.isfile(path))
+        self.assertEqual(self.storage.list_preset_names(), [])
+
+    def test_delete_preset_is_case_insensitive(self):
+        payload = {"classification_labels": [], "roi_categories": [], "segment_labels": []}
+        self.storage.save_preset("Mixed Case", payload)
+        self.storage.delete_preset("mixed case")
+        self.assertEqual(self.storage.list_preset_names(), [])
+
+    def test_delete_preset_not_found_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            self.storage.delete_preset("Missing Preset")
+
+    def test_save_load_delete_workflow(self):
+        payload = {
+            "classification_labels": [{"name": "Normal", "color": "#4CAF50"}],
+            "roi_categories": [],
+            "segment_labels": [],
+        }
+        self.storage.save_preset("Workflow", payload)
+        loaded = self.storage.load_preset("Workflow")
+        self.assertEqual(loaded["classification_labels"][0]["name"], "Normal")
+        self.storage.delete_preset("Workflow")
+        self.assertEqual(self.storage.list_preset_names(), [])
+        with self.assertRaises(FileNotFoundError):
+            self.storage.load_preset("Workflow")
+
 
 class TestLabelColors(unittest.TestCase):
     def test_normalize_hex_color(self):
