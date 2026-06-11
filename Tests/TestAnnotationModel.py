@@ -13,6 +13,8 @@ from AnnotationModel import (
     LabelDefinition, LabelConfig, ClassLabelAnnotation, PlaneSliceContext,
     SegmentSpatialExtent, SegmentModificationEvent,
     should_record_segment_modification, VOLUME_SCOPED_EFFECTS,
+    derive_export_folder_name, resolve_unique_export_subdirectory,
+    EXPORT_ANNOTATIONS_FILENAME, EXPORT_SEGMENTATION_FILENAME,
 )
 from RadiologyTerms import slice_view_to_plane, roi_geometry_type_export
 from SliceInfo import anatomical_slice_index_from_ijk
@@ -110,6 +112,37 @@ class TestToDict(unittest.TestCase):
         d = record.to_dict()
         self.assertIsNotNone(d["segmentation"])
         self.assertEqual(d["segmentation"]["segments"][0]["name"], "Tumor")
+
+    def test_to_export_dict_omits_segmentation(self):
+        seg = SegmentationData(
+            labels=[SegmentLabel(name="Tumor", color="#ff0000", segment_id="Segment_1")],
+            total_voxel_count=5000,
+        )
+        record = AnnotationRecord(
+            class_labels=["Normal"],
+            rois=[ROIAnnotation(roi_type="line", control_points=[{"x": 0, "y": 0, "z": 0}])],
+            segmentation=seg,
+        )
+        export_payload = record.to_export_dict()
+        self.assertNotIn("segmentation", export_payload)
+        self.assertEqual(len(export_payload["classification_labels"]), 1)
+        self.assertEqual(len(export_payload["regions_of_interest"]), 1)
+        self.assertIn("segmentation", record.to_dict())
+
+    def test_to_export_json_round_trip_without_segmentation(self):
+        record = AnnotationRecord(
+            study_id="EXPORT-1",
+            class_labels=["Normal"],
+            rois=[ROIAnnotation(roi_type="line", control_points=[{"x": 1, "y": 2, "z": 3}])],
+            segmentation=SegmentationData(
+                labels=[SegmentLabel(name="Tumor", color="#ff0000")],
+            ),
+        )
+        restored = AnnotationRecord.from_dict(json.loads(record.to_export_json()))
+        self.assertIsNone(restored.segmentation)
+        self.assertEqual(restored.study_id, "EXPORT-1")
+        self.assertEqual(restored.class_labels[0].label, "Normal")
+        self.assertEqual(len(restored.rois), 1)
 
     def test_to_dict_with_scan(self):
         scan = ScanMetadata(
@@ -1107,6 +1140,56 @@ class TestLabelColors(unittest.TestCase):
         self.assertNotIn(picked, normalized_used)
 
 
+class TestExportFolderNaming(unittest.TestCase):
+    def test_prefers_scan_filename_stem(self):
+        record = AnnotationRecord(
+            scan=ScanMetadata(filename="Patient_123_Scan.nrrd", volume_name="Volume A"),
+            study_id="STUDY-001",
+        )
+        self.assertEqual(derive_export_folder_name(record), "Patient_123_Scan")
+
+    def test_falls_back_to_volume_name(self):
+        record = AnnotationRecord(
+            scan=ScanMetadata(volume_name="MRHead"),
+            study_id="STUDY-001",
+        )
+        self.assertEqual(derive_export_folder_name(record), "MRHead")
+
+    def test_falls_back_to_study_id(self):
+        record = AnnotationRecord(study_id="Scan_001", series_id="SERIES-1")
+        self.assertEqual(derive_export_folder_name(record), "Scan_001")
+
+    def test_falls_back_to_series_id(self):
+        record = AnnotationRecord(series_id="SERIES-ONLY")
+        self.assertEqual(derive_export_folder_name(record), "SERIES-ONLY")
+
+    def test_generated_fallback_when_no_metadata(self):
+        record = AnnotationRecord(id="abcdef12-3456-7890-abcd-ef1234567890")
+        self.assertEqual(derive_export_folder_name(record), "scan-abcdef12")
+
+    def test_sanitizes_invalid_characters(self):
+        record = AnnotationRecord(scan=ScanMetadata(filename="bad/name?.nrrd"))
+        self.assertEqual(derive_export_folder_name(record), "bad_name_")
+
+    def test_resolve_unique_subdirectory(self):
+        with tempfile.TemporaryDirectory() as parent:
+            first = resolve_unique_export_subdirectory(parent, "Scan_001")
+            os.makedirs(first)
+            second = resolve_unique_export_subdirectory(parent, "Scan_001")
+            self.assertEqual(os.path.basename(first), "Scan_001")
+            self.assertEqual(os.path.basename(second), "Scan_001_2")
+
+    def test_export_filenames(self):
+        self.assertEqual(EXPORT_ANNOTATIONS_FILENAME, "annotations.json")
+        self.assertEqual(EXPORT_SEGMENTATION_FILENAME, "segmentation.nii.gz")
+
+    def test_segmentation_volume_path_for_annotation_file(self):
+        path = AnnotationRecord.segmentation_volume_path_for_annotation_file(
+            "/tmp/export/Scan_001/annotations.json"
+        )
+        self.assertEqual(path, "/tmp/export/Scan_001/segmentation.nii.gz")
+
+
 class TestBackwardCompatibility(unittest.TestCase):
     """Test loading old format JSON files with removed/missing fields."""
 
@@ -1134,6 +1217,16 @@ class TestBackwardCompatibility(unittest.TestCase):
         record = AnnotationRecord.from_dict(data)
         self.assertEqual(record.id, "future-test")
         self.assertEqual(record.class_labels[0].label, "A")
+
+    def test_export_json_without_segmentation_key(self):
+        export_data = {
+            "id": "export-only",
+            "classification_labels": [{"category": "Normal", "plane_slices": []}],
+            "regions_of_interest": [],
+        }
+        record = AnnotationRecord.from_dict(export_data)
+        self.assertIsNone(record.segmentation)
+        self.assertEqual(record.class_labels[0].label, "Normal")
 
 
 if __name__ == "__main__":
