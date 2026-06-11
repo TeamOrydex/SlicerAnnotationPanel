@@ -859,6 +859,7 @@ class SegmentLabel:
     segment_id: str = ""
     description: str = ""
     label_config_id: str = ""
+    export_label_value: int = 0
     created_at: str = field(default_factory=utc_iso_timestamp)
     voxel_count: int = 0
     spatial_extent: Optional[SegmentSpatialExtent] = None
@@ -874,6 +875,7 @@ class SegmentLabel:
             "segment_id": self.segment_id,
             "description": self.description,
             "label_config_id": self.label_config_id,
+            "export_label_value": self.export_label_value,
             "created_at": self.created_at,
             "voxel_count": self.voxel_count,
             "last_effect_name": self.last_effect_name,
@@ -892,6 +894,8 @@ class SegmentLabel:
             "segment_id": self.segment_id,
             "label_config_id": self.label_config_id,
         }
+        if self.export_label_value > 0:
+            payload["export_label_value"] = self.export_label_value
         if self.created_at:
             payload["created_at"] = self.created_at
         return payload
@@ -907,6 +911,7 @@ class SegmentLabel:
             segment_id=data.get("segment_id", ""),
             description=data.get("description", ""),
             label_config_id=data.get("label_config_id", ""),
+            export_label_value=int(data.get("export_label_value", 0) or 0),
             created_at=_created_at_from_import(data),
             voxel_count=int(data.get("voxel_count", 0) or 0),
             spatial_extent=SegmentSpatialExtent.from_dict(spatial) if spatial else None,
@@ -1194,14 +1199,58 @@ def segment_label_def_for_label_value(
     seg_labels: List[LabelDefinition],
 ) -> Optional[LabelDefinition]:
     """
-    Map a labelmap voxel value to the configured segmentation class.
-    Export writes value 1 for the first configured class, 2 for the second, etc.
+    Map a labelmap voxel value to the configured segmentation class by config order.
+    Legacy fallback for imports without exported segment metadata.
     """
     if label_value <= 0:
         return None
     index = label_value - 1
     if index < len(seg_labels):
         return seg_labels[index]
+    return None
+
+
+def imported_segments_have_export_label_values(
+    imported_segments: List["SegmentLabel"],
+) -> bool:
+    """Return True when imported metadata includes persistent label-value mappings."""
+    return any(
+        seg.export_label_value > 0 and seg.label_config_id
+        for seg in imported_segments or []
+    )
+
+
+def label_config_id_for_export_label_value(
+    label_value: int,
+    imported_segments: List["SegmentLabel"],
+) -> Optional[str]:
+    """Resolve a labelmap value to a configured label id using exported metadata."""
+    if label_value <= 0:
+        return None
+    matches = [
+        seg.label_config_id
+        for seg in imported_segments or []
+        if seg.export_label_value == label_value and seg.label_config_id
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def label_config_id_for_imported_segment_name(
+    name: str,
+    imported_segments: List["SegmentLabel"],
+) -> Optional[str]:
+    """Resolve an imported segment name to a configured label id when unique."""
+    if not name:
+        return None
+    matches = [
+        seg.label_config_id
+        for seg in imported_segments or []
+        if seg.name == name and seg.label_config_id
+    ]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
@@ -1259,7 +1308,6 @@ def reconcile_imported_record(record: AnnotationRecord) -> AnnotationRecord:
 
     if record.segmentation:
         seg_by_id, seg_by_name = _label_definition_lookup(config.segmentation_classes)
-        label_to_segment_map: Dict[str, str] = dict(record.segmentation.label_to_segment_map or {})
         for segment_label in record.segmentation.labels:
             label_def = _resolve_label_definition(
                 segment_label.label_config_id,
@@ -1273,9 +1321,8 @@ def reconcile_imported_record(record: AnnotationRecord) -> AnnotationRecord:
             segment_label.color = label_def.color
             segment_label.description = label_def.description
             segment_label.label_config_id = label_def.id
-            if segment_label.segment_id:
-                label_to_segment_map[label_def.id] = segment_label.segment_id
-        record.segmentation.label_to_segment_map = label_to_segment_map
+        # MRML segment ids are resolved live during segmentation import.
+        record.segmentation.label_to_segment_map = {}
 
     return record
 
