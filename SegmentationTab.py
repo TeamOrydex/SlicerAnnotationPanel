@@ -17,6 +17,7 @@ from AnnotationModel import (
     VOLUME_SCOPED_EFFECTS,
     should_record_segment_modification,
     segment_label_def_for_label_value,
+    utc_iso_timestamp,
 )
 from SliceInfo import (
     capture_slice_info,
@@ -156,6 +157,8 @@ class SegmentationTab(qt.QWidget):
         self._volume_node = None
         self._seg_labels = []  # List[LabelDefinition] from config
         self._label_to_segment_map = {}  # label_def.id -> segment_id in segmentation
+        self._segment_created_at = {}  # segment_id -> creation timestamp (ISO 8601 UTC)
+        self._imported_label_created_at = {}  # label_config_id -> imported created_at
         self._modification_events = []
         self._segmentation_observer = None
         self._segmentation_core_observer = None
@@ -339,6 +342,8 @@ class SegmentationTab(qt.QWidget):
             self._segment_editor_node = None
         self._volume_node = None
         self._label_to_segment_map = {}
+        self._segment_created_at = {}
+        self._imported_label_created_at = {}
         self._modification_events = []
         self._segment_effect_summary = {}
         self._segment_voxel_snapshots = {}
@@ -423,6 +428,7 @@ class SegmentationTab(qt.QWidget):
             segment_id = segmentation.GetNthSegmentID(i)
             if segment_id not in mapped_segment_ids:
                 segmentation.RemoveSegment(segment_id)
+                self._segment_created_at.pop(segment_id, None)
 
         for label_def in seg_labels:
             if label_def.id in self._label_to_segment_map:
@@ -432,7 +438,9 @@ class SegmentationTab(qt.QWidget):
                 label_def.name, label_def.name, [r, g, b]
             )
             self._label_to_segment_map[label_def.id] = segment_id
+            self._record_segment_creation(segment_id)
 
+        self._apply_imported_label_timestamps()
         self._select_first_segment()
         self._reset_modification_snapshots()
         try:
@@ -467,6 +475,7 @@ class SegmentationTab(qt.QWidget):
             seg_id = self._label_to_segment_map.pop(lid, None)
             if seg_id:
                 segmentation.RemoveSegment(seg_id)
+                self._segment_created_at.pop(seg_id, None)
 
         for lid, new_def in new_by_id.items():
             if lid in self._label_to_segment_map:
@@ -476,6 +485,7 @@ class SegmentationTab(qt.QWidget):
                 new_def.name, new_def.name, [r, g, b]
             )
             self._label_to_segment_map[lid] = seg_id
+            self._record_segment_creation(seg_id)
 
         try:
             self._segment_editor_widget.refresh()
@@ -510,6 +520,7 @@ class SegmentationTab(qt.QWidget):
         segmentation = self._segmentation_node.GetSegmentation()
         segmentation.RemoveAllSegments()
         self._label_to_segment_map = {}
+        self._segment_created_at = {}
 
         for label_def in self._seg_labels:
             r, g, b = hex_to_rgb_float(label_def.color)
@@ -517,9 +528,37 @@ class SegmentationTab(qt.QWidget):
                 label_def.name, label_def.name, [r, g, b]
             )
             self._label_to_segment_map[label_def.id] = seg_id
+            self._record_segment_creation(seg_id)
 
         self._select_first_segment()
         self._reset_modification_snapshots()
+
+    def _record_segment_creation(self, segment_id, created_at=None):
+        """Store the creation timestamp for a segment without overwriting existing values."""
+        if not segment_id or segment_id in self._segment_created_at:
+            return
+        self._segment_created_at[segment_id] = created_at or utc_iso_timestamp()
+
+    def _restore_imported_segment_timestamps(self, labels):
+        """Preserve imported segment creation timestamps without generating new ones."""
+        self._imported_label_created_at = {}
+        for lbl in labels or []:
+            if lbl.label_config_id and lbl.created_at:
+                self._imported_label_created_at[lbl.label_config_id] = lbl.created_at
+            if not lbl.segment_id:
+                continue
+            if lbl.created_at:
+                self._segment_created_at[lbl.segment_id] = lbl.created_at
+            else:
+                self._segment_created_at.setdefault(lbl.segment_id, "")
+
+    def _apply_imported_label_timestamps(self):
+        """Map imported label-config timestamps onto live MRML segment ids."""
+        for label_id, segment_id in self._label_to_segment_map.items():
+            created_at = self._imported_label_created_at.get(label_id)
+            if not created_at or self._segment_created_at.get(segment_id):
+                continue
+            self._segment_created_at[segment_id] = created_at
 
     def _select_first_segment(self):
         """Select the first configured segment in the segment editor."""
@@ -1478,6 +1517,7 @@ class SegmentationTab(qt.QWidget):
                     name=segment.GetName(),
                     color=rgb_float_to_hex(color_arr[0], color_arr[1], color_arr[2]),
                     segment_id=segment_id,
+                    created_at=self._segment_created_at.get(segment_id, ""),
                 )
                 data.labels.append(lbl)
 
@@ -1681,8 +1721,15 @@ class SegmentationTab(qt.QWidget):
                 "timestamp": event.timestamp,
             }
 
+        self._restore_imported_segment_timestamps(seg_data.labels)
+        self._apply_imported_label_timestamps()
         self._select_first_segment()
         self._reset_modification_snapshots()
+
+        if seg_data.total_voxel_count > 0:
+            self._stats_label.setText(f"Total segmented voxels: {seg_data.total_voxel_count:,}")
+        elif self._segmentation_node is not None:
+            self._refresh_stats()
 
         return True
 
