@@ -93,11 +93,12 @@ class ClassLabelTab(qt.QWidget):
 
     # ─── Public API ──────────────────────────────────────────────────────
 
-    def set_labels(self, labels):
+    def set_labels(self, labels, clear_annotations=True):
         """Populate the tab with configured class labels (LabelDefinition list)."""
         self._clear_label_buttons()
         self._labels = list(labels)
-        self._annotations = []
+        if clear_annotations:
+            self._annotations = []
         self._selected_label_def = None
 
         for label_def in self._labels:

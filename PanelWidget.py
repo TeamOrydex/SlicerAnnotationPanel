@@ -11,10 +11,13 @@ from AnnotationModel import (
     SegmentationData,
     derive_export_folder_name,
     resolve_unique_export_subdirectory,
+    resolve_import_paths,
+    build_record_from_import,
+    derive_import_preset_name,
     EXPORT_ANNOTATIONS_FILENAME,
     EXPORT_SEGMENTATION_FILENAME,
 )
-from PresetStorage import preset_name_key
+from PresetStorage import preset_name_key, save_preset_overwrite
 from ClassLabelTab import ClassLabelTab
 from ROITab import ROITab
 from SegmentationTab import SegmentationTab
@@ -162,6 +165,10 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         btn_layout = qt.QHBoxLayout()
 
+        self._import_btn = qt.QPushButton("Import Annotations")
+        self._import_btn.clicked.connect(self._on_import_annotations)
+        btn_layout.addWidget(self._import_btn)
+
         self._save_draft_btn = qt.QPushButton("Save Draft")
         self._save_draft_btn.clicked.connect(self._on_save_draft)
         btn_layout.addWidget(self._save_draft_btn)
@@ -239,6 +246,27 @@ class AnnotationPanelRootWidget(qt.QWidget):
             )
         else:
             self._segmentation_tab.set_labels(config.segmentation_classes)
+
+    def _push_labels_to_tabs_for_import(self, config):
+        """Push label config to tabs without resetting imported segmentation data."""
+        self._class_label_tab.set_labels(config.class_labels, clear_annotations=False)
+        self._roi_tab.set_labels(config.roi_labels)
+        self._segmentation_tab.set_labels(config.segmentation_classes, create_segments=False)
+
+    def _apply_imported_label_configuration(self, config, preset_name):
+        """Persist imported label configuration and activate it across the panel."""
+        try:
+            save_preset_overwrite(preset_name, config.to_dict())
+        except Exception as exc:
+            qt.QMessageBox.warning(
+                self,
+                "Preset Save Failed",
+                f"Annotations were imported, but the label preset could not be saved:\n{exc}",
+            )
+        self._config_screen.apply_imported_config(config, preset_name)
+        self._active_preset_name = preset_name
+        self._label_config = config
+        self._record.label_config = config
 
     def _handle_config_changes(self, old_config, new_config):
         """Handle label additions, renames, and removals when re-configuring."""
@@ -344,6 +372,7 @@ class AnnotationPanelRootWidget(qt.QWidget):
             self._record.segmentation is not None
             and (
                 bool(self._record.segmentation.labels)
+                or bool(self._record.segmentation.export_filepath)
                 or bool(self._record.segmentation.per_label_voxel_counts)
                 or self._record.segmentation.total_voxel_count > 0
             )
@@ -364,9 +393,12 @@ class AnnotationPanelRootWidget(qt.QWidget):
 
         if volume:
             self._roi_tab.set_volume(volume)
-            self._segmentation_tab.set_volume(volume)
+            self._segmentation_tab.set_volume(volume, create_segments=False)
         if self._label_config:
-            self._segmentation_tab.set_labels(self._label_config.segmentation_classes)
+            self._segmentation_tab.set_labels(
+                self._label_config.segmentation_classes,
+                create_segments=False,
+            )
 
         if notify:
             qt.QMessageBox.information(
@@ -376,11 +408,14 @@ class AnnotationPanelRootWidget(qt.QWidget):
             )
 
     def _update_readiness(self):
-        """Enable annotation tabs only when both config and series are ready."""
-        ready = (self._label_config is not None) and (self._active_volume_node is not None)
-        self._tab_widget.setEnabled(ready)
-        self._save_draft_btn.setEnabled(ready)
-        self._export_btn.setEnabled(ready)
+        """Enable tabs when label config exists; scan is optional after import."""
+        config_ready = self._label_config is not None
+        has_scan = self._active_volume_node is not None
+        has_annotations = self._has_any_annotations()
+        self._tab_widget.setEnabled(config_ready)
+        self._import_btn.setEnabled(True)
+        self._save_draft_btn.setEnabled(config_ready and (has_scan or has_annotations))
+        self._export_btn.setEnabled(config_ready and (has_scan or has_annotations))
 
     # ─── Scan Upload ─────────────────────────────────────────────────────
 
@@ -555,7 +590,20 @@ class AnnotationPanelRootWidget(qt.QWidget):
         self._collect_all_data()
         return self._record
 
-    def set_record(self, record):
+    def set_record(self, record, *, clear_existing=True):
+        volume = self._active_volume_node
+        if clear_existing:
+            self._class_label_tab.set_class_label_annotations([])
+            self._roi_tab.clear_and_unbind()
+            self._segmentation_tab.clear_and_unbind()
+            if volume:
+                self._roi_tab.set_volume(volume)
+            if self._label_config:
+                self._segmentation_tab.set_labels(
+                    self._label_config.segmentation_classes,
+                    create_segments=False,
+                )
+
         self._record = record
         self._roi_tab.set_annotation_record(record)
         self._study_label.setText(f"Study: {record.study_id}")
@@ -567,57 +615,122 @@ class AnnotationPanelRootWidget(qt.QWidget):
         if record.rois:
             self._roi_tab.load_rois(record.rois)
 
-        if record.segmentation:
-            self._segmentation_tab.load_segmentation(record.segmentation)
-
-    def load_annotation(self, filepath):
-        """Load a draft JSON file and populate the panel."""
-        with open(filepath, "r") as f:
-            data = json.load(f)
-        record = AnnotationRecord.from_dict(data)
-
-        if record.segmentation is None:
-            nifti_path = AnnotationRecord.segmentation_volume_path_for_annotation_file(filepath)
-            if os.path.exists(nifti_path):
-                record.segmentation = SegmentationData(
-                    export_filepath=nifti_path,
-                    export_format="nifti",
-                )
-
-        # Restore label configuration
         if record.label_config:
-            self._label_config = record.label_config
-            self._record.label_config = record.label_config
-            self._config_screen.load_config(record.label_config)
-            self._push_labels_to_tabs(record.label_config)
-            self._stacked_widget.setCurrentIndex(1)
-        else:
-            self._stacked_widget.setCurrentIndex(0)
-            qt.QMessageBox.information(
-                self, "No Configuration",
-                "This draft has no label configuration. "
-                "Please define labels before proceeding."
+            self._segmentation_tab.set_labels(
+                record.label_config.segmentation_classes,
+                create_segments=False,
             )
 
-        # Try to auto-load the referenced scan
-        if record.scan and record.scan.filepath:
-            if os.path.exists(record.scan.filepath):
-                result = qt.QMessageBox.question(
-                    self, "Load Series",
-                    f"This draft references an image series at:\n{record.scan.filepath}\n\nLoad it?",
-                    qt.QMessageBox.Yes | qt.QMessageBox.No,
+        if record.segmentation:
+            success = self._segmentation_tab.load_segmentation(record.segmentation)
+            if volume:
+                self._segmentation_tab.bind_volume_reference(volume)
+            if not success:
+                error_detail = getattr(
+                    self._segmentation_tab, "_last_import_error", ""
+                ) or "Unknown error."
+                qt.QMessageBox.warning(
+                    self,
+                    "Segmentation Import Failed",
+                    f"Could not load the segmentation volume.\n\n{error_detail}",
                 )
-                if result == qt.QMessageBox.Yes:
-                    self._load_volume_from_file(record.scan.filepath)
-            else:
-                qt.QMessageBox.information(
-                    self, "Series Not Found",
-                    f"The original image series was not found at:\n{record.scan.filepath}\n\n"
-                    "Please load the series manually."
+            elif record.label_config:
+                seg_map = (
+                    record.segmentation.label_to_segment_map
+                    if record.segmentation
+                    else None
                 )
+                self._segmentation_tab.reconcile_imported_segment_labels(
+                    record.label_config.segmentation_classes,
+                    label_to_segment_map=seg_map,
+                )
+        elif record.label_config:
+            self._segmentation_tab.reconcile_imported_segment_labels(
+                record.label_config.segmentation_classes,
+            )
+
+    def import_annotations(self, path):
+        """Import annotations from an export folder or annotations.json file."""
+        resolution = resolve_import_paths(path)
+        if resolution.errors and not resolution.is_importable():
+            qt.QMessageBox.critical(
+                self,
+                "Import Failed",
+                "\n".join(resolution.errors),
+            )
+            return False
+
+        record, build_errors = build_record_from_import(
+            resolution,
+            fallback_label_config=self._label_config,
+        )
+        if build_errors or record is None:
+            qt.QMessageBox.critical(
+                self,
+                "Import Failed",
+                "\n".join(build_errors or resolution.errors or ["Import failed."]),
+            )
+            return False
+
+        if self._has_any_annotations():
+            result = qt.QMessageBox.question(
+                self,
+                "Import Annotations",
+                "Importing will replace the current annotations in this session.\n\nContinue?",
+                qt.QMessageBox.Yes | qt.QMessageBox.No,
+                qt.QMessageBox.No,
+            )
+            if result != qt.QMessageBox.Yes:
+                return False
+
+        preset_name = derive_import_preset_name(record, resolution.directory)
+        self._apply_imported_label_configuration(record.label_config, preset_name)
+        self._push_labels_to_tabs_for_import(record.label_config)
+        self._stacked_widget.setCurrentIndex(1)
 
         self.set_record(record)
+
+        imported_parts = []
+        if record.class_labels:
+            imported_parts.append(f"{len(record.class_labels)} classification label(s)")
+        if record.rois:
+            imported_parts.append(f"{len(record.rois)} ROI(s)")
+        if record.segmentation and record.segmentation.export_filepath:
+            imported_parts.append("segmentation volume")
+
+        summary = "Imported " + ", ".join(imported_parts) + "." if imported_parts else "Import completed."
+        if resolution.warnings:
+            qt.QMessageBox.warning(
+                self,
+                "Import Completed with Warnings",
+                summary + "\n\n" + "\n".join(resolution.warnings),
+            )
+        else:
+            qt.QMessageBox.information(self, "Import Complete", summary)
+
         self._update_readiness()
+        return True
+
+    def load_annotation(self, filepath):
+        """Load a draft or exported annotation file and populate the panel."""
+        return self.import_annotations(filepath)
+
+    def _on_import_annotations(self):
+        folder = qt.QFileDialog.getExistingDirectory(
+            self, "Select Export Folder", ""
+        )
+        path = ConfigurationScreen._file_dialog_path(folder)
+        if not path:
+            file_result = qt.QFileDialog.getOpenFileName(
+                self,
+                "Select annotations.json",
+                "",
+                "JSON Files (*.json)",
+            )
+            path = ConfigurationScreen._file_dialog_path(file_result)
+        if not path:
+            return
+        self.import_annotations(path)
 
     def cleanup(self):
         """Clean up observers when the panel is destroyed."""
