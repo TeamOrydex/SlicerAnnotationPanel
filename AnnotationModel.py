@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 import os
 import uuid
 import json
@@ -25,6 +25,79 @@ ANNOTATION_SCHEMA_VERSION = "1.1.0"
 
 EXPORT_ANNOTATIONS_FILENAME = "annotations.json"
 EXPORT_SEGMENTATION_FILENAME = "segmentation.nii.gz"
+
+
+@dataclass
+class ImportResolution:
+    """Resolved paths and status for an annotation import request."""
+    source_path: str = ""
+    directory: str = ""
+    annotations_path: str = ""
+    segmentation_path: str = ""
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def has_annotations_file(self) -> bool:
+        return bool(self.annotations_path) and os.path.isfile(self.annotations_path)
+
+    @property
+    def has_segmentation_file(self) -> bool:
+        return bool(self.segmentation_path) and os.path.isfile(self.segmentation_path)
+
+    def is_importable(self) -> bool:
+        return self.has_annotations_file or self.has_segmentation_file
+
+
+def resolve_import_paths(path: str) -> ImportResolution:
+    """Resolve annotations.json and segmentation.nii.gz from a folder or JSON file path."""
+    resolution = ImportResolution(source_path=path or "")
+    if not path:
+        resolution.errors.append("No import path was provided.")
+        return resolution
+
+    normalized = os.path.abspath(path)
+    if os.path.isdir(normalized):
+        resolution.directory = normalized
+        resolution.annotations_path = os.path.join(normalized, EXPORT_ANNOTATIONS_FILENAME)
+        resolution.segmentation_path = os.path.join(normalized, EXPORT_SEGMENTATION_FILENAME)
+    elif os.path.isfile(normalized):
+        if normalized.lower().endswith(".json"):
+            resolution.annotations_path = normalized
+            resolution.directory = os.path.dirname(normalized)
+            resolution.segmentation_path = AnnotationRecord.segmentation_volume_path_for_annotation_file(
+                normalized
+            )
+        elif normalized.lower().endswith((".nii", ".nii.gz")):
+            resolution.segmentation_path = normalized
+            resolution.directory = os.path.dirname(normalized)
+            resolution.annotations_path = os.path.join(resolution.directory, EXPORT_ANNOTATIONS_FILENAME)
+        else:
+            resolution.errors.append(
+                f"Unsupported import file type: {os.path.basename(normalized)}"
+            )
+            return resolution
+    else:
+        resolution.errors.append(f"Import path does not exist: {normalized}")
+        return resolution
+
+    if not resolution.has_annotations_file and resolution.has_segmentation_file:
+        resolution.warnings.append(
+            f"{EXPORT_ANNOTATIONS_FILENAME} was not found. "
+            f"Only {EXPORT_SEGMENTATION_FILENAME} will be imported."
+        )
+    elif resolution.has_annotations_file and not resolution.has_segmentation_file:
+        resolution.warnings.append(
+            f"{EXPORT_SEGMENTATION_FILENAME} was not found. "
+            "Classification and ROI annotations will be imported without segmentation."
+        )
+    elif not resolution.has_annotations_file and not resolution.has_segmentation_file:
+        resolution.errors.append(
+            f"No {EXPORT_ANNOTATIONS_FILENAME} or {EXPORT_SEGMENTATION_FILENAME} "
+            f"found at {normalized}."
+        )
+
+    return resolution
 
 
 def _sanitize_export_folder_name(name: str) -> str:
@@ -968,3 +1041,195 @@ class AnnotationRecord:
             os.path.dirname(annotation_filepath),
             EXPORT_SEGMENTATION_FILENAME,
         )
+
+
+def _label_definition_lookup(labels: List[LabelDefinition]) -> Tuple[Dict[str, LabelDefinition], Dict[str, LabelDefinition]]:
+    by_id = {lbl.id: lbl for lbl in labels if lbl.id}
+    by_name = {lbl.name: lbl for lbl in labels if lbl.name}
+    return by_id, by_name
+
+
+def segment_label_def_for_label_value(
+    label_value: int,
+    seg_labels: List[LabelDefinition],
+) -> Optional[LabelDefinition]:
+    """
+    Map a labelmap voxel value to the configured segmentation class.
+    Export writes value 1 for the first configured class, 2 for the second, etc.
+    """
+    if label_value <= 0:
+        return None
+    index = label_value - 1
+    if index < len(seg_labels):
+        return seg_labels[index]
+    return None
+
+
+def _resolve_label_definition(
+    label_id: str,
+    label_name: str,
+    by_id: Dict[str, LabelDefinition],
+    by_name: Dict[str, LabelDefinition],
+) -> Optional[LabelDefinition]:
+    if label_id and label_id in by_id:
+        return by_id[label_id]
+    if label_name and label_name in by_name:
+        return by_name[label_name]
+    return None
+
+
+def reconcile_imported_record(record: AnnotationRecord) -> AnnotationRecord:
+    """
+    Sync imported annotations with label_configuration using stable label ids.
+    Config definitions are authoritative for names, colors, and descriptions.
+    """
+    config = record.label_config
+    if not config:
+        return record
+
+    class_by_id, class_by_name = _label_definition_lookup(config.class_labels)
+    for annotation in record.class_labels:
+        label_def = _resolve_label_definition(
+            annotation.category_id,
+            annotation.label,
+            class_by_id,
+            class_by_name,
+        )
+        if not label_def:
+            continue
+        annotation.label = label_def.name
+        annotation.category_id = label_def.id
+        annotation.category_color = label_def.color
+        annotation.category_description = label_def.description
+
+    roi_by_id, roi_by_name = _label_definition_lookup(config.roi_labels)
+    for roi in record.rois:
+        label_def = _resolve_label_definition(
+            roi.category_id,
+            roi.label,
+            roi_by_id,
+            roi_by_name,
+        )
+        if not label_def:
+            continue
+        roi.label = label_def.name
+        roi.category_id = label_def.id
+        roi.color = label_def.color
+        roi.category_description = label_def.description
+
+    if record.segmentation:
+        seg_by_id, seg_by_name = _label_definition_lookup(config.segmentation_classes)
+        label_to_segment_map: Dict[str, str] = dict(record.segmentation.label_to_segment_map or {})
+        for segment_label in record.segmentation.labels:
+            label_def = _resolve_label_definition(
+                segment_label.label_config_id,
+                segment_label.name,
+                seg_by_id,
+                seg_by_name,
+            )
+            if not label_def:
+                continue
+            segment_label.name = label_def.name
+            segment_label.color = label_def.color
+            segment_label.description = label_def.description
+            segment_label.label_config_id = label_def.id
+            if segment_label.segment_id:
+                label_to_segment_map[label_def.id] = segment_label.segment_id
+        record.segmentation.label_to_segment_map = label_to_segment_map
+
+    return record
+
+
+def _filename_stem(filename: str) -> str:
+    stem = os.path.splitext(filename or "")[0]
+    if stem.lower().endswith(".nii"):
+        stem = os.path.splitext(stem)[0]
+    return stem
+
+
+def derive_import_preset_name(record: AnnotationRecord, directory: str = "") -> str:
+    """Derive a stable preset display name for an imported annotation package."""
+    candidates = []
+    if record.scan and record.scan.filename:
+        candidates.append(_filename_stem(record.scan.filename))
+    if record.scan and record.scan.volume_name:
+        candidates.append(record.scan.volume_name)
+    if directory:
+        candidates.append(os.path.basename(directory.rstrip(os.sep)))
+    if record.study_id:
+        candidates.append(record.study_id)
+    if record.series_id:
+        candidates.append(record.series_id)
+
+    for candidate in candidates:
+        safe = _sanitize_export_folder_name(candidate)
+        if safe:
+            return f"Import-{safe}"
+
+    return f"Import-{record.id[:8]}"
+
+
+def build_record_from_import(
+    resolution: ImportResolution,
+    *,
+    fallback_label_config: Optional[LabelConfig] = None,
+) -> Tuple[Optional[AnnotationRecord], List[str]]:
+    """
+    Build an AnnotationRecord from resolved import paths.
+    Returns (record, errors). Record is None when import cannot proceed.
+    """
+    errors: List[str] = []
+    if not resolution.is_importable():
+        return None, list(resolution.errors)
+
+    record: Optional[AnnotationRecord] = None
+
+    if resolution.has_annotations_file:
+        try:
+            with open(resolution.annotations_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            record = AnnotationRecord.from_dict(data)
+        except json.JSONDecodeError as exc:
+            errors.append(f"Invalid JSON in {EXPORT_ANNOTATIONS_FILENAME}: {exc}")
+            return None, errors
+        except OSError as exc:
+            errors.append(f"Could not read {EXPORT_ANNOTATIONS_FILENAME}: {exc}")
+            return None, errors
+
+    if record is None:
+        record = AnnotationRecord(label_config=fallback_label_config)
+
+    if resolution.has_segmentation_file:
+        if record.segmentation is None or not record.segmentation.export_filepath:
+            record.segmentation = SegmentationData(
+                export_filepath=resolution.segmentation_path,
+                export_format="nifti",
+            )
+    elif (
+        record.segmentation is not None
+        and record.segmentation.export_filepath
+        and not os.path.isfile(record.segmentation.export_filepath)
+    ):
+        sibling = (
+            AnnotationRecord.segmentation_volume_path_for_annotation_file(
+                resolution.annotations_path
+            )
+            if resolution.annotations_path
+            else ""
+        )
+        if sibling and os.path.isfile(sibling):
+            record.segmentation.export_filepath = sibling
+            record.segmentation.export_format = "nifti"
+
+    if record.label_config is None and fallback_label_config is not None:
+        record.label_config = fallback_label_config
+
+    if not record.label_config:
+        errors.append(
+            "No label configuration found in the import and none is active. "
+            "Define or import labels before importing annotations."
+        )
+        return None, errors
+
+    reconcile_imported_record(record)
+    return record, errors
