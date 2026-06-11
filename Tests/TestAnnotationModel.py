@@ -16,6 +16,7 @@ from AnnotationModel import (
     derive_export_folder_name, resolve_unique_export_subdirectory,
     resolve_import_paths, build_record_from_import,
     reconcile_imported_record, derive_import_preset_name,
+    label_configs_differ,
     segment_label_def_for_label_value,
     EXPORT_ANNOTATIONS_FILENAME, EXPORT_SEGMENTATION_FILENAME,
 )
@@ -1043,6 +1044,57 @@ class TestLabelConfig(unittest.TestCase):
         self.assertEqual(config.class_labels, [])
         self.assertEqual(config.roi_labels, [])
         self.assertEqual(config.segmentation_classes, [])
+
+
+class TestLabelConfigsDiffer(unittest.TestCase):
+    def _config(self, **kwargs):
+        defaults = {
+            "class_labels": [LabelDefinition(id="c1", name="Normal", color="#4CAF50")],
+            "roi_labels": [LabelDefinition(id="r1", name="Tumor", color="#e6194b", drawing_tool="rectangle_3d")],
+            "segmentation_classes": [LabelDefinition(id="s1", name="Edema", color="#3cb44b")],
+        }
+        defaults.update(kwargs)
+        return LabelConfig(**defaults)
+
+    def test_identical_configs_do_not_differ(self):
+        config = self._config()
+        self.assertFalse(label_configs_differ(config, self._config()))
+
+    def test_added_label_id_differs(self):
+        left = self._config()
+        right = self._config(
+            class_labels=[
+                LabelDefinition(id="c1", name="Normal", color="#4CAF50"),
+                LabelDefinition(id="c2", name="Artifact", color="#ff0000"),
+            ]
+        )
+        self.assertTrue(label_configs_differ(left, right))
+
+    def test_renamed_label_differs(self):
+        left = self._config()
+        right = self._config(
+            class_labels=[LabelDefinition(id="c1", name="Abnormal", color="#4CAF50")]
+        )
+        self.assertTrue(label_configs_differ(left, right))
+
+    def test_color_change_differs(self):
+        left = self._config()
+        right = self._config(
+            roi_labels=[LabelDefinition(id="r1", name="Tumor", color="#000000", drawing_tool="rectangle_3d")]
+        )
+        self.assertTrue(label_configs_differ(left, right))
+
+    def test_roi_drawing_tool_change_differs(self):
+        left = self._config()
+        right = self._config(
+            roi_labels=[LabelDefinition(id="r1", name="Tumor", color="#e6194b", drawing_tool="rectangle_2d")]
+        )
+        self.assertTrue(label_configs_differ(left, right))
+
+    def test_none_config_handling(self):
+        config = self._config()
+        self.assertTrue(label_configs_differ(None, config))
+        self.assertFalse(label_configs_differ(None, None))
 
 
 class TestAnnotationRecordWithLabelConfig(unittest.TestCase):
