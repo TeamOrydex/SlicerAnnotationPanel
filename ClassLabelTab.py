@@ -3,6 +3,12 @@ import qt
 from AnnotationModel import ClassLabelAnnotation
 from SliceInfo import capture_all_planes_slice_info, install_slice_tracking, remove_slice_tracking
 
+_LABEL_BUTTON_STYLE = (
+    "QPushButton {{ font-size: 11px; padding: 2px 8px; border: 1px solid {color}; "
+    "border-radius: 3px; }}"
+    "QPushButton:checked {{ background-color: #2196F3; color: white; border-color: #1976D2; }}"
+)
+
 
 class ClassLabelTab(qt.QWidget):
     """
@@ -49,9 +55,21 @@ class ClassLabelTab(qt.QWidget):
         label_layout.addWidget(hint)
 
         row = qt.QHBoxLayout()
-        self._label_button_container = qt.QHBoxLayout()
-        row.addLayout(self._label_button_container)
-        row.addStretch()
+        row.setSpacing(6)
+
+        self._label_grid_widget = qt.QWidget()
+        self._label_button_container = qt.QGridLayout(self._label_grid_widget)
+        self._label_button_container.setContentsMargins(0, 0, 0, 0)
+        self._label_button_container.setHorizontalSpacing(4)
+        self._label_button_container.setVerticalSpacing(4)
+
+        self._label_scroll = qt.QScrollArea()
+        self._label_scroll.setWidget(self._label_grid_widget)
+        self._label_scroll.setWidgetResizable(True)
+        self._label_scroll.setFrameShape(qt.QFrame.NoFrame)
+        self._label_scroll.setHorizontalScrollBarPolicy(qt.Qt.ScrollBarAlwaysOff)
+        self._label_scroll.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
+        row.addWidget(self._label_scroll, 1, qt.Qt.AlignTop)
 
         self._add_btn = qt.QPushButton("Add")
         self._add_btn.setStyleSheet(
@@ -70,12 +88,20 @@ class ClassLabelTab(qt.QWidget):
         self._table.setHorizontalHeaderLabels(
             ["#", "Actions", "Label", "Axial Slice", "Coronal Slice", "Sagittal Slice", "Color"]
         )
-        self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.setColumnWidth(1, 80)
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, qt.QHeaderView.Stretch)
+        header.setSectionResizeMode(3, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, qt.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, qt.QHeaderView.ResizeToContents)
         self._table.setSelectionBehavior(qt.QTableWidget.SelectRows)
         self._table.setSelectionMode(qt.QTableWidget.SingleSelection)
         self._table.setEditTriggers(qt.QTableWidget.NoEditTriggers)
-        parent_layout.addWidget(self._table)
+        self._table.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Expanding)
+        parent_layout.addWidget(self._table, 1)
 
     def _build_actions(self, parent_layout):
         action_row = qt.QHBoxLayout()
@@ -100,17 +126,21 @@ class ClassLabelTab(qt.QWidget):
         self._annotations = []
         self._selected_label_def = None
 
-        for label_def in self._labels:
+        columns = self._grid_columns(len(self._labels))
+
+        for index, label_def in enumerate(self._labels):
             btn = qt.QPushButton(label_def.name)
             btn.setCheckable(True)
-            btn.setToolTip(label_def.description)
-            btn.setStyleSheet(
-                f"QPushButton {{ padding: 6px 12px; border: 2px solid {label_def.color}; }}"
-                "QPushButton:checked { background-color: #2196F3; color: white; }"
-            )
+            btn.setToolTip(label_def.description or label_def.name)
+            btn.setFixedHeight(24)
+            btn.setSizePolicy(qt.QSizePolicy.Minimum, qt.QSizePolicy.Fixed)
+            btn.setStyleSheet(_LABEL_BUTTON_STYLE.format(color=label_def.color))
             btn.toggled.connect(lambda checked, ld=label_def: self._on_label_button_toggled(ld, checked))
-            self._label_button_container.addWidget(btn)
+            grid_row, grid_col = divmod(index, columns)
+            self._label_button_container.addWidget(btn, grid_row, grid_col)
             self._label_buttons[label_def.name] = btn
+
+        self._update_label_scroll_height(len(self._labels), columns)
 
         self._refresh_table()
         self._update_add_button_state()
@@ -174,6 +204,22 @@ class ClassLabelTab(qt.QWidget):
         self._refresh_table()
 
     # ─── Internal ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _grid_columns(label_count):
+        if label_count <= 1:
+            return 1
+        if label_count <= 4:
+            return label_count
+        return 4
+
+    def _update_label_scroll_height(self, label_count, columns):
+        rows = max(1, (label_count + columns - 1) // columns)
+        visible_rows = min(rows, 3)
+        button_height = 24
+        spacing = self._label_button_container.verticalSpacing()
+        height = visible_rows * button_height + max(0, visible_rows - 1) * spacing + 2
+        self._label_scroll.setFixedHeight(height)
 
     def _clear_label_buttons(self):
         for btn in self._label_buttons.values():
