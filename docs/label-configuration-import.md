@@ -9,9 +9,12 @@ Use this format when creating a JSON preset for the **Label Configuration** scre
    - choose a saved preset from the **Presets** dropdown (if any exist), or
    - click **Import from JSON** and select a `.json` file from anywhere on disk.
 3. Confirm when prompted — loading a preset or import **replaces** all labels currently shown in the three category tables.
-4. Review the loaded labels, then click **Confirm & Start Annotation**.
+4. Review the loaded labels, then click **Save as Preset** if the configuration is not already saved in the `presets/` folder.
+5. Click **Confirm & Start Annotation** only after the current tables match a saved preset on disk.
 
 To save labels you created manually, click **Save as Preset**, enter a **unique preset name** (required), and the configuration is written as JSON into the extension's `presets/` folder beside the module. Saved presets then appear in the dropdown automatically.
+
+**Delete Preset** removes the selected preset JSON from disk (with confirmation). **Clear Labels** in each category section removes only that category's rows. **Clear Everything** removes all labels from all three tables. Destructive actions always prompt for confirmation.
 
 ---
 
@@ -25,7 +28,7 @@ The file is a single JSON object with **three arrays**, one per label category:
 | `roi_categories` | `roi_labels` | Categories for drawn regions of interest |
 | `segment_labels` | `segmentation_classes` | Voxel-level segment names for the segmentation tab |
 
-Each array contains zero or more **label objects**. At least **one label total** across all three arrays is required before you can start annotation.
+Each array contains zero or more **label objects**. At least **one label total** across all three arrays is required before you can start annotation, and the configuration must be saved as a preset that matches the current tables.
 
 ---
 
