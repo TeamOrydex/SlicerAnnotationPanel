@@ -23,16 +23,33 @@ AnnotationPanel/
 └── Resources/Icons/            # Module icons
 ```
 
+## Workflow
+
+The panel works as a standalone annotation tool. After configuring labels, all
+annotation tabs are available immediately — a loaded image series is optional.
+
+```text
+Open Extension → Configure Labels → Annotate → Import / Export
+```
+
+Load images through Slicer's built-in tools (Data module, drag-and-drop, DICOM).
+When a series is present in the scene, the panel links it automatically for export
+metadata. Use **Detach Series** to unlink without clearing annotations.
+
 ## Export terminology
 
-Formal export writes a **scan-specific folder** under the directory you choose:
+Formal export writes a folder under the directory you choose:
 
 ```text
 <export-directory>/
-└── <scan-name>/
+└── <folder-name>/
     ├── annotations.json
     └── segmentation.nii.gz   # when segmentation annotations exist
 ```
+
+Folder naming uses scan metadata when a series is linked (`Patient_123_Scan`, volume
+name, study/series id). Without scan metadata, exports use a standalone fallback such
+as `AnnotationSession_2026_06_11/` or `Export_<id-prefix>/`.
 
 `annotations.json` contains classification labels, ROIs, label configuration, and series metadata. Segmentation voxel data is exported separately as `segmentation.nii.gz`, not embedded in the JSON.
 

@@ -1,6 +1,6 @@
 # Annotation Export Format
 
-Formal export from the Annotation Panel writes a scan-specific folder under the
+Formal export from the Annotation Panel writes a folder under the
 directory chosen in the export dialog.
 
 ## Folder layout
@@ -29,7 +29,10 @@ The scan folder name is derived from available metadata, in priority order:
 2. Volume name
 3. Study identifier (`study_id`)
 4. Series identifier (`series_id`)
-5. Generated fallback: `scan-<record-id-prefix>`
+5. Standalone fallback: `AnnotationSession_YYYY_MM_DD` (UTC date)
+6. Last resort: `Export_<record-id-prefix>`
+
+When no series is linked, step 5 or 6 applies so export still succeeds.
 
 Invalid path characters are replaced with underscores. If a folder with the
 same name already exists, a numeric suffix is appended (`_2`, `_3`, ...).
