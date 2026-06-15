@@ -73,7 +73,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **User Value:** Forces intentional schema design before annotation begins, reducing rework and ensuring export consistency.
 
-**Typical Use Case:** A project lead defines five ROI categories (organ, lesion, artifact, etc.) each bound to the appropriate drawing tool (polygon for organs, bounding box for lesions, line for measurements).
+**Typical Use Case:** A project lead defines ROI categories each bound to the appropriate drawing tool.
 
 ![Annotation Panel label configuration screen](static/label-config-screenshot.png)
 
