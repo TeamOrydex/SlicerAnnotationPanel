@@ -58,7 +58,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **User Value:** Annotators complete an entire case in one place without switching Slicer modules or reconciling label definitions manually.
 
-**Typical Use Case:** A researcher labels a liver CT with slice-level "Normal/Abnormal" classification, draws a lesion bounding box, and paints a parenchyma segmentation — then exports one package for the ML team.
+**Typical Use Case:** A researcher labels a lung CT with slice-level "Non-Small Cell Lung Cancer (NSCLC)" classification, draws a 3D bounding box around the Primary Tumor (GTV-1), and paints a Lung Parenchyma segmentation — then exports one package for the ML team.
 
 **Unified Annotation Workspace Screen:** The following screenshot shows the Annotation Panel’s central workspace, where the Classification, ROI, and Segmentation tabs are unified under a single labeling session.
 
@@ -85,7 +85,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **User Value:** Teams share standardized label protocols; individual annotators skip repetitive setup.
 
-**Typical Use Case:** A "Spleen CT Annotation" preset (classification: Normal/Enlarged/Abnormal; ROI: Spleen polygon, Lesion bounding box; segments: Spleen/Lesion/Infarct) is distributed as JSON and loaded by every annotator on the project.
+**Typical Use Case:** A "Lungs CT" preset (classification: NSCLC subtypes and disease stages; ROI: Primary Tumor (GTV-1), Left/Right Lung, Spinal Cord, Esophagus; segments: Tumor (GTV-1), Left/Right Lung Parenchyma, Spinal Cord, Esophagus) is distributed as JSON and loaded by every annotator on the project.
 
 **Preset Save Screen:** This screenshot shows the Annotation Panel interface for saving a new preset configuration.
 
@@ -118,7 +118,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **User Value:** Records spatial context across all standard planes in one action — richer than a single-plane label and useful for review and downstream analysis.
 
-**Typical Use Case:** A radiologist marks a slice as "Enlarged" spleen while the panel records exact slice indexes and physical offsets in all three orientations.
+**Typical Use Case:** A radiologist marks a slice as "Non-Small Cell Lung Cancer (NSCLC)" while the panel records exact Axial, Coronal, and Sagittal slice indexes and physical offsets in all three orientations.
 
 **Classification Annotation Screen:** This screenshot demonstrates the interface for assigning a classification label to a slice, capturing Axial, Coronal, and Sagittal positions with a single action.
 
@@ -133,9 +133,9 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **User Value:** Supports diverse clinical marking needs — organ boundaries, lesion boxes, distance measurements — with category-specific tooling.
 
-**Typical Use Case:** A researcher draws a polygon around spleen parenchyma, a 3D box around a focal lesion, and a line across an imaging artifact.
+**Typical Use Case:** A researcher draws a 3D bounding box around the Primary Tumor (GTV-1), a freehand contour around the spinal cord, and a line across an imaging artifact.
 
-**ROI Annotation Screen:** This screenshot demonstrates the interface for drawing a region of interest using the panel's drawing tools. As shown in the image, only the Bounding Box 2D tool is available for the label "Splenic Hilar Lymph Node".
+**ROI Annotation Screen:** This screenshot demonstrates the interface for drawing a region of interest using the panel's drawing tools. As shown in the image, only the Bounding Box tool is available for the label "Primary Tumor (GTV-1)".
 
 ![Annotation Panel ROI annotation screen](static/roi-annotation.png)
 
@@ -148,7 +148,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **User Value:** Annotators manage complex multi-ROI cases without cluttering the view or losing spatial context.
 
-**Typical Use Case:** During review, an annotator hides all ROIs except the lesion box, then clicks a table row to navigate directly to that region.
+**Typical Use Case:** During review, an annotator hides all ROIs except the Primary Tumor (GTV-1) box, then clicks a table row to navigate directly to that region.
 
 **ROI Hide Example:** This screenshot shows the Annotation Panel after locally hiding one ROI region while other ROIs remain visible. The red arrow shows the hide icon.
 
@@ -179,7 +179,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **User Value:** Full voxel-level segmentation power within the unified panel, without navigating Slicer's standalone Segment Editor module.
 
-**Typical Use Case:** An annotator thresholds spleen parenchyma, paints missed regions, and uses Fill between slices to interpolate across sparse axial slices.
+**Typical Use Case:** An annotator thresholds lung parenchyma, paints missed regions of the tumor, and uses Fill between slices to interpolate across sparse axial slices.
 
 **Segmentation Threshold Example:** In this screenshot, the threshold range for segmentation is visible within the red box and highlighted region across all three planes, each overlaid with the corresponding label color. This visual feedback lets annotators verify the exact voxels included by the chosen threshold, supporting precise segmentation workflows.
 
