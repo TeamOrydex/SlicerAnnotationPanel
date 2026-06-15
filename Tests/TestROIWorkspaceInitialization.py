@@ -6,7 +6,7 @@ import unittest
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "AnnotationPanel"))
 
 from AnnotationModel import LabelDefinition
 
