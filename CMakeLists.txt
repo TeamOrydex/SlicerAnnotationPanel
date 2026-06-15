@@ -4,7 +4,7 @@ project(SlicerAnnotationPanel)
 
 #-----------------------------------------------------------------------------
 # Extension meta-information
-set(EXTENSION_HOMEPAGE    "https://github.com/saad-orydex/SlicerAnnotationPanel")
+set(EXTENSION_HOMEPAGE    "https://github.com/TeamOrydex/SlicerAnnotationPanel")
 set(EXTENSION_CATEGORY    "Quantification")
 set(EXTENSION_CONTRIBUTORS "saad-orydex (Orydex)")
 set(EXTENSION_DESCRIPTION
@@ -14,9 +14,9 @@ set(EXTENSION_ICONURL     "")
 # When ready, add the icon at:
 #   AnnotationPanel/Resources/Icons/AnnotationPanel.png
 # then set this to:
-#   "https://raw.githubusercontent.com/saad-orydex/SlicerAnnotationPanel/production/AnnotationPanel/Resources/Icons/AnnotationPanel.png"
+#   "https://raw.githubusercontent.com/TeamOrydex/SlicerAnnotationPanel/production/AnnotationPanel/Resources/Icons/AnnotationPanel.png"
 set(EXTENSION_SCREENSHOTURLS
-  "https://raw.githubusercontent.com/saad-orydex/SlicerAnnotationPanel/production/static/import-and-resume.png")
+  "https://raw.githubusercontent.com/TeamOrydex/SlicerAnnotationPanel/production/static/import-and-resume.png")
 set(EXTENSION_DEPENDS     "NA")
 
 #-----------------------------------------------------------------------------

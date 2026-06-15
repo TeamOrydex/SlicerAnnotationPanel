@@ -3,10 +3,10 @@
 # Reference: https://slicer.readthedocs.io/en/latest/developer_guide/extensions.html
 
 scm            git
-scmurl         https://github.com/saad-orydex/SlicerAnnotationPanel.git
+scmurl         https://github.com/TeamOrydex/SlicerAnnotationPanel.git
 scmrevision    production
 
-homepage       https://github.com/saad-orydex/SlicerAnnotationPanel
+homepage       https://github.com/TeamOrydex/SlicerAnnotationPanel
 category       Quantification
 description    Annotation Panel is a 3D Slicer extension that brings classification, ROI, and segmentation annotation into one preset-driven workflow with portable export packages.
 contributors   saad-orydex (Orydex)
@@ -15,9 +15,9 @@ license        Apache 2.0
 iconurl
 # intentionally blank — icon not yet available.
 # Once the icon is added at AnnotationPanel/Resources/Icons/AnnotationPanel.png, set this to:
-# https://raw.githubusercontent.com/saad-orydex/SlicerAnnotationPanel/production/AnnotationPanel/Resources/Icons/AnnotationPanel.png
+# https://raw.githubusercontent.com/TeamOrydex/SlicerAnnotationPanel/production/AnnotationPanel/Resources/Icons/AnnotationPanel.png
 
-screenshoturls https://raw.githubusercontent.com/saad-orydex/SlicerAnnotationPanel/production/static/import-and-resume.png
+screenshoturls https://raw.githubusercontent.com/TeamOrydex/SlicerAnnotationPanel/production/static/import-and-resume.png
 
 depends        NA
 build_subdirectory .
