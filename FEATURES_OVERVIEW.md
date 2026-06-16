@@ -38,24 +38,21 @@ Paint, threshold, erase, and refine voxel-level segmentations using a focused se
 **[8. Volume-Optional Annotation](./FEATURES.md#volume-optional-annotation)**  
 Configure labels and begin annotating before imaging data is loaded; add the scan later when it arrives.
 
-**[9. Automatic Volume Linking](./FEATURES.md#automatic-volume-linking)**  
-When you load a scan in Slicer, the panel detects it and attaches study and series metadata to your export automatically.
-
 ### Sharing and continuity
 
-**[10. Formal Export Package](./FEATURES.md#formal-export-package)**  
+**[9. Formal Export Package](./FEATURES.md#formal-export-package)**  
 Export a complete folder with annotation metadata and segmentation volumes ready to share or use in downstream tools.
 
-**[11. Import and Resume](./FEATURES.md#import-and-resume)**  
+**[10. Import and Resume](./FEATURES.md#import-and-resume)**  
 Reopen a previous export folder and continue editing classifications, ROIs, and segmentations where you left off.
 
-**[12. Configuration Conflict Resolution](./FEATURES.md#configuration-conflict-resolution)**  
+**[11. Configuration Conflict Resolution](./FEATURES.md#configuration-conflict-resolution)**  
 When an imported package uses different labels than your current session, choose whether to adopt the imported schema or keep your own.
 
-**[13. Edit Configuration with Reconciliation](./FEATURES.md#edit-configuration-with-reconciliation)**  
+**[12. Edit Configuration with Reconciliation](./FEATURES.md#edit-configuration-with-reconciliation)**  
 Return to the label setup screen mid-project; renames and color changes update existing annotations, with clear warnings when labels are removed.
 
-**[14. ROI-Only Partial Export](./FEATURES.md#roi-only-partial-export)**  
+**[13. ROI-Only Partial Export](./FEATURES.md#roi-only-partial-export)**  
 Export just your ROI list as JSON when you only need markup geometry, without the full annotation package.
 
 ---

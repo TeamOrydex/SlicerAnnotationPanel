@@ -181,7 +181,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 **Typical Use Case:** An annotator thresholds lung parenchyma, paints missed regions of the tumor, and uses Fill between slices to interpolate across sparse axial slices.
 
-**Segmentation Threshold Example:** In this screenshot, the threshold range for segmentation is visible within the red box and highlighted region across all three planes, each overlaid with the corresponding label color. This visual feedback lets annotators verify the exact voxels included by the chosen threshold, supporting precise segmentation workflows.
+**Segmentation Example:** Segmentation example, showcasing left and right lungs cleanly segmented in a scan. The highlighted regions across all three image planes demonstrate how specific anatomical structures can be clearly identified and separated within the image.
 
 ![Segmentation threshold range highlighted in all planes](static/seg-threshold.png)
 
@@ -207,27 +207,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 ---
 
-<h3 id="automatic-volume-linking">9. Automatic Volume Linking</h3>
-
-**Description:** When a volume appears in the Slicer scene, the panel detects it and binds scan metadata (DICOM UIDs, spacing, IJK→RAS matrix, window/level) for export — without a series picker in the panel UI.
-
-**User Value:** Zero-friction connection between loaded imaging data and annotation exports.
-
-**Typical Use Case:** A user drags an NRRD file into Slicer; the panel immediately shows study/series context and includes full metadata in the next export.
-
-**Automatic Volume Linking Example:** The screenshot below shows previously drawn ROIs (before a scan was loaded) automatically appearing over the newly loaded scan at the correct position and slice. This demonstrates how the panel seamlessly links and overlays ROIs onto imaging data as soon as the scan is available.
-
-![Automatic Volume Linking with loaded scan](static/automatic-volume-linking.png)
-
-
-**Automatic Volume Linking Export Example:** The screenshot below shows ROI, segmentation overlays, and metadata (e.g., in the DICOM UID field) reflected in the next export. When a scan becomes available, all previously created annotations are positioned and included automatically in the output dataset.
-
-![Automatic Volume Linking reflected in export data](static/automatic-volume-linking-export.png)
-
-
----
-
-<h3 id="formal-export-package">10. Formal Export Package</h3>
+<h3 id="formal-export-package">9. Formal Export Package</h3>
 
 **Description:** Export Annotations writes a subfolder containing `annotations.json` (classification, ROIs, label config, series metadata, segmentation metadata) plus up to three segmentation volume files when segmentation exists.
 
@@ -242,7 +222,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 ---
 
-<h3 id="import-and-resume">11. Import and Resume</h3>
+<h3 id="import-and-resume">10. Import and Resume</h3>
 
 **Description:** Import Annotations accepts export folders, standalone `annotations.json`, or segmentation volumes alone. Restores classification, ROIs, and segmentation. Handles configuration conflicts with an explicit user choice.
 
@@ -257,7 +237,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 ---
 
-<h3 id="configuration-conflict-resolution">12. Configuration Conflict Resolution</h3>
+<h3 id="configuration-conflict-resolution">11. Configuration Conflict Resolution</h3>
 
 **Description:** When imported label configuration differs from the active session, the user chooses **Import New Configuration** (replace all, auto-save as `Import-<name>` preset, return to config screen) or **Keep Current Configuration** (cancel import, no partial changes).
 
@@ -267,7 +247,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 ---
 
-<h3 id="edit-configuration-with-reconciliation">13. Edit Configuration with Reconciliation</h3>
+<h3 id="edit-configuration-with-reconciliation">12. Edit Configuration with Reconciliation</h3>
 
 **Description:** Users can return to the configuration screen from the annotation workspace. Label renames and color updates propagate to existing annotations; label removal or ROI drawing-tool changes trigger warnings and delete incompatible annotations.
 
@@ -282,7 +262,7 @@ Import restores classification rows, ROI markups, segmentation masks, and label 
 
 ---
 
-<h3 id="roi-only-partial-export">14. ROI-Only Partial Export</h3>
+<h3 id="roi-only-partial-export">13. ROI-Only Partial Export</h3>
 
 **Description:** The ROI tab offers a separate "Export ROIs to JSON" action that exports only the ROI list, independent of the full annotation package.
 
