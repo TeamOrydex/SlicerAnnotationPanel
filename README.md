@@ -5,6 +5,31 @@ A custom annotation panel for 3D Slicer that supports:
 - **Regions of interest (ROI)** — bounding boxes, polygon/freehand contours, and linear measurements; per-ROI and global hide/show toggles in the ROI tab (view state is session-only and not exported)
 - **Segmentations** — voxel-level segment painting (paint, erase, threshold, scissors)
 
+## Intended Use Cases
+
+- **ML training data** — annotate CT/MRI studies with classification labels, ROI geometry, and segmentation masks in one session, then export a structured package for training pipelines.
+- **Multi-annotator studies** — distribute a named preset so every team member uses the same label schema; export packages are self-contained and portable across machines.
+- **Clinical research review** — mark slice-level findings, draw organ or lesion boundaries, and paint voxel segmentations without leaving a single panel.
+- **Iterative annotation** — export mid-session, hand off to a colleague, and resume from the same state via import; configuration conflicts are resolved explicitly rather than silently.
+- **Scan-independent setup** — define and save label configurations before imaging data arrives; link a volume later and re-export with full DICOM metadata.
+
+## Features
+
+### Classification Annotation
+Assign slice-level labels across Axial, Coronal, and Sagittal planes in a single action. Each label captures exact slice indexes and spatial offsets for all three orientations.
+
+![Classification Annotation](static/classification-annotation.png)
+
+### ROI Annotation
+Draw regions of interest using five markup types — 2D bounding box, 3D bounding box, polygon contour, freehand contour, and linear measurement. Each ROI category is pre-bound to a drawing tool at configuration time.
+
+![ROI Annotation](static/roi-annotation.png)
+
+### Segmentation Annotation
+Paint, threshold, erase, and refine voxel-level segmentations with 14 curated Segment Editor effects embedded directly in the panel.
+
+![Segmentation Annotation](static/seg-threshold.png)
+
 ## Structure
 
 ```
@@ -91,26 +116,22 @@ Each export includes:
 
 ## Installation
 
-Add this repository's root directory to Slicer's additional module paths:
 1. Open 3D Slicer
-2. Go to Edit → Application Settings → Modules
-3. Add the path to this `AnnotationPanel/` directory
-4. Restart Slicer
+2. Go to **View → Extensions Manager**
+3. Search for **AnnotationPanel**
+4. Click **Install** and restart Slicer when prompted
 
-The module will appear under the "Annotation" category.
+The module will appear under the **Quantification** category.
 
-## Testing
+## Documentation
 
-### Unit Tests (standalone Python)
-
-```bash
-cd AnnotationPanel
-python Tests/TestAnnotationModel.py -v
-```
-
-### Integration Testing (in Slicer)
-
-Load the **Annotation Panel Test Harness** module in Slicer. It provides buttons to load a sample volume, add sample ROIs, add sample segmentation, and test the export workflow.
+| Document | Description |
+|----------|-------------|
+| [docs/FEATURES.md](docs/FEATURES.md) | Full feature descriptions, use cases, and screenshots |
+| [docs/FEATURES_OVERVIEW.md](docs/FEATURES_OVERVIEW.md) | Browsable feature index with links into FEATURES.md |
+| [docs/export-format.md](docs/export-format.md) | Export folder layout, JSON schema, and import behavior |
+| [docs/label-configuration-import.md](docs/label-configuration-import.md) | Preset JSON format and field reference |
+| [docs/example_preset.json](docs/example_preset.json) | Example Lungs CT preset ready to import |
 
 ## Requirements
 
