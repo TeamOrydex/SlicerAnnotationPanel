@@ -56,29 +56,29 @@ Each entry in an array is an object with these fields:
 {
   "classification_labels": [
     {
-      "name": "Normal",
-      "color": "#4CAF50",
-      "description": "No abnormality identified"
+      "name": "Non-Small Cell Lung Cancer (NSCLC)",
+      "color": "#f44336",
+      "description": "Primary diagnosis; encompasses large cell carcinoma, squamous cell carcinoma, and adenocarcinoma subtypes"
     },
     {
-      "name": "Abnormal",
-      "color": "#f44336",
-      "description": "Abnormality present"
+      "name": "Adenocarcinoma",
+      "color": "#ffc107",
+      "description": "Most common NSCLC subtype; typically peripheral and may present as a ground-glass opacity on CT"
     }
   ],
   "roi_categories": [
     {
-      "name": "Lesion",
-      "color": "#e6194b",
-      "description": "Focal lesion region",
+      "name": "GTV-1",
+      "color": "#4caf50",
+      "description": "Gross Tumor Volume of the primary lung malignancy",
       "drawing_tool": "rectangle_3d"
     }
   ],
   "segment_labels": [
     {
-      "name": "Lesion",
-      "color": "#e6194b",
-      "description": "Lesion segmentation"
+      "name": "GTV-1",
+      "color": "#00ff78",
+      "description": "Voxel-level segmentation of the primary gross tumor volume"
     }
   ]
 }
@@ -94,73 +94,123 @@ Example preset with all three label categories populated:
 {
   "classification_labels": [
     {
-      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "name": "Normal",
-      "color": "#4CAF50",
-      "description": "Normal spleen size and appearance"
-    },
-    {
-      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-      "name": "Enlarged",
-      "color": "#FF9800",
-      "description": "Splenomegaly"
-    },
-    {
-      "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
-      "name": "Abnormal",
+      "id": "594fdde5-40aa-4b02-a946-89ccdfb2cb69",
+      "name": "Non-Small Cell Lung Cancer (NSCLC)",
       "color": "#f44336",
-      "description": "Focal or diffuse abnormality"
+      "description": "Primary diagnosis for all patients in this collection; encompasses large cell carcinoma, squamous cell carcinoma, and adenocarcinoma histological subtypes"
+    },
+    {
+      "id": "366d0af1-6fbe-4e7f-934b-5b0de7faaa1c",
+      "name": "Large Cell Carcinoma",
+      "color": "#ff5722",
+      "description": "Undifferentiated NSCLC subtype that does not fit squamous or glandular patterns; tends to present as a large peripheral mass and carries a poor prognosis"
+    },
+    {
+      "id": "2a01ce7d-1321-404c-be20-3705dd308899",
+      "name": "Squamous Cell Carcinoma",
+      "color": "#ff9800",
+      "description": "NSCLC subtype strongly associated with smoking; typically arises centrally near the bronchi and may present with cavitation on CT"
+    },
+    {
+      "id": "9c08f89c-c598-4146-bf72-c5b3f6117fa0",
+      "name": "Adenocarcinoma",
+      "color": "#ffc107",
+      "description": "Most common NSCLC subtype; typically peripheral in location and may present as a ground-glass opacity, part-solid, or solid nodule on CT"
+    },
+    {
+      "id": "48900027-0993-478e-86eb-39ae02d9a2c9",
+      "name": "Stage IIIb",
+      "color": "#9c27b0",
+      "description": "Advanced locoregional disease; defined by T any N3 M0 or T4 N2 M0; indicates contralateral mediastinal or supraclavicular lymph node involvement without distant metastasis"
+    },
+    {
+      "id": "6ae68106-1ccf-47f9-b74f-00c229d156fe",
+      "name": "Stage IIIa",
+      "color": "#673ab7",
+      "description": "Locoregional disease with ipsilateral mediastinal or subcarinal lymph node involvement (N2); potentially resectable in select cases"
+    },
+    {
+      "id": "c04b9751-d8b1-4517-b52f-b3f07b94db32",
+      "name": "Stage IIb",
+      "color": "#3f51b5",
+      "description": "Tumor with limited nodal involvement (N1) or a larger T3 tumor with no nodal spread; surgical resection is the primary treatment option"
+    },
+    {
+      "id": "767f7d29-93a9-4d65-8b4a-b817537c578d",
+      "name": "Stage Ia / Ib",
+      "color": "#2196f3",
+      "description": "Early-stage disease confined to the lung without lymph node involvement; Ia is smaller than 3 cm, Ib is between 3 and 5 cm; best surgical outcomes"
+    },
+    {
+      "id": "e4e41dce-3026-4b84-898d-6c5a49d93e97",
+      "name": "Deceased",
+      "color": "#607d8b",
+      "description": "Patient outcome; deadstatus.event = 1 in the NSCLC-Radiomics clinical spreadsheet; survival time recorded in days from diagnosis"
+    },
+    {
+      "id": "9114ebd4-04b9-460f-83c7-6edc7a799883",
+      "name": "Alive",
+      "color": "#4caf50",
+      "description": "Patient outcome; deadstatus.event = 0 in the NSCLC-Radiomics clinical spreadsheet; patient was alive at last follow-up"
     }
   ],
   "roi_categories": [
     {
-      "name": "Spleen",
-      "color": "#8B4513",
-      "description": "Spleen boundary region",
-      "drawing_tool": "polygon"
-    },
-    {
-      "name": "Lesion",
-      "color": "#e6194b",
-      "description": "Focal splenic lesion",
+      "id": "f81b6085-9da1-40c9-98cc-311dcb1ee456",
+      "name": "GTV-1",
+      "color": "#4caf50",
+      "description": "Gross Tumor Volume of the primary lung malignancy; manually contoured by a radiation oncologist; used as the target volume in radiotherapy planning",
       "drawing_tool": "rectangle_3d"
     },
     {
-      "name": "Infarct",
-      "color": "#911eb4",
-      "description": "Splenic infarct",
-      "drawing_tool": "polygon"
+      "id": "d81368e4-ff2c-44be-95c8-294eb9951900",
+      "name": "Left Lung",
+      "color": "#2196f3",
+      "description": "Entire left lung parenchyma; delineated as an organ at risk in radiotherapy planning to limit radiation dose and prevent pneumonitis",
+      "drawing_tool": "rectangle_3d"
     },
     {
-      "name": "Accessory Spleen",
-      "color": "#4363d8",
-      "description": "Accessory splenic tissue",
-      "drawing_tool": "polygon"
+      "id": "3834d694-48da-40a3-bea9-dc1ba26a4b8c",
+      "name": "Right Lung",
+      "color": "#1565c0",
+      "description": "Entire right lung parenchyma; delineated as an organ at risk in radiotherapy planning; the right lung has three lobes compared to two on the left",
+      "drawing_tool": "rectangle_3d"
     },
     {
-      "name": "Artifact",
-      "color": "#808080",
-      "description": "Imaging artifact",
-      "drawing_tool": "line"
+      "id": "241182b4-6bd8-4c82-bbf2-482e9cb35be4",
+      "name": "Spinal Cord",
+      "color": "#ff9800",
+      "description": "Spinal cord delineated as a critical organ at risk; strict dose constraints are applied to avoid radiation myelopathy, an irreversible and potentially fatal complication",
+      "drawing_tool": "freehand_curve"
     }
   ],
   "segment_labels": [
     {
-      "name": "Spleen",
-      "color": "#8B4513",
-      "description": "Spleen parenchyma"
+      "id": "63f949b8-a4ec-4a95-b731-a8ac96e36c96",
+      "name": "GTV-1",
+      "color": "#00ff78",
+      "description": "Voxel-level segmentation of the primary gross tumor volume; contoured slice-by-slice by a radiation oncologist; used for radiomics feature extraction and volumetric analysis"
     },
     {
-      "name": "Lesion",
-      "color": "#e6194b",
-      "description": "Focal lesion segmentation"
+      "id": "b8e8c9a6-7bec-40e4-b00c-1e83a8e43ddb",
+      "name": "Left Lung",
+      "color": "#4040ff",
+      "description": "Full segmentation of the left lung including parenchyma and airways; used for lung volume calculation and dose-volume histogram analysis in radiotherapy planning"
     },
     {
-      "name": "Infarct",
-      "color": "#911eb4",
-      "description": "Infarcted tissue"
+      "id": "e80f8c0d-0e15-4ec8-9eb8-b0ed1528ccec",
+      "name": "Right Lung",
+      "color": "#005500",
+      "description": "Full segmentation of the right lung; the larger of the two lungs with three lobes; used for volumetric and dosimetric analysis in radiotherapy"
+    },
+    {
+      "id": "8a4bc5b8-8f9d-4f82-a2ae-7382ec455bfe",
+      "name": "Spinal Cord",
+      "color": "#ffc060",
+      "description": "Precise voxel-level delineation of the spinal cord canal; critical structure in thoracic radiotherapy planning with strict maximum dose constraints to prevent myelopathy"
     }
-  ]
+  ],
+  "preset_name": "Lungs CT"
 }
 ```
 
