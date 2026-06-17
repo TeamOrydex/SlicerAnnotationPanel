@@ -12,10 +12,7 @@ description    Annotation Panel is a 3D Slicer extension that brings classificat
 contributors   saad-orydex (Orydex)
 license        Apache 2.0
 
-iconurl
-# intentionally blank — icon not yet available.
-# Once the icon is added at AnnotationPanel/Resources/Icons/AnnotationPanel.png, set this to:
-# https://raw.githubusercontent.com/TeamOrydex/SlicerAnnotationPanel/production/AnnotationPanel/Resources/Icons/AnnotationPanel.png
+iconurl        https://raw.githubusercontent.com/TeamOrydex/SlicerAnnotationPanel/production/AnnotationPanel/Resources/Icons/AnnotationPanel.png
 
 screenshoturls https://raw.githubusercontent.com/TeamOrydex/SlicerAnnotationPanel/production/static/import-and-resume.png
 
