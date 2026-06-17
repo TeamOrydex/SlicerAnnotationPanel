@@ -95,7 +95,7 @@ Export → share folder → Import on another machine to continue
 | Document | Content |
 |----------|---------|
 | [FEATURES.md](./FEATURES.md) | Full feature descriptions, workflows, and reference material |
-| [README.md](./README.md) | Installation and project structure |
-| [docs/export-format.md](./docs/export-format.md) | Export folder layout and JSON schema |
-| [docs/label-configuration-import.md](./docs/label-configuration-import.md) | Preset JSON format |
-| [docs/preset.json](./docs/preset.json) | Example spleen CT preset |
+| [README.md](../README.md) | Installation and project structure |
+| [export-format.md](./export-format.md) | Export folder layout and JSON schema |
+| [label-configuration-import.md](./label-configuration-import.md) | Preset JSON format |
+| [example_preset.json](./example_preset.json) | Example Lungs CT preset ready to import |

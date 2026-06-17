@@ -2,7 +2,7 @@
 
 A guide to what Annotation Panel does, the problems it addresses, and how to use it — written for annotators, reviewers, and project leads rather than developers.
 
-For a browsable feature index with links into this document, see [FEATURES_OVERVIEW.md](./FEATURES_OVERVIEW.md). For JSON schema and format specifications, see [docs/export-format.md](docs/export-format.md) and [docs/label-configuration-import.md](docs/label-configuration-import.md).
+For a browsable feature index with links into this document, see [FEATURES_OVERVIEW.md](./FEATURES_OVERVIEW.md). For JSON schema and format specifications, see [export-format.md](./export-format.md) and [label-configuration-import.md](./label-configuration-import.md).
 
 ---
 
@@ -371,7 +371,7 @@ flowchart TD
 
 ### Team preset distribution
 
-1. Project lead creates and saves a preset (or exports `docs/preset.json` as a template).
+1. Project lead creates and saves a preset (or exports `docs/example_preset.json` as a template).
 2. Team members use **Import from JSON** on the configuration screen or place JSON in the presets directory.
 3. Everyone annotates with identical label schemas.
 
@@ -486,13 +486,13 @@ Tool availability is checked at runtime against the installed Slicer version; un
 
 **Not exported:** ROI visibility state (session-only), MRML `label_to_segment_map` (rebuilt on import).
 
-See [docs/export-format.md](docs/export-format.md) for folder naming rules, JSON key reference, and detailed import behavior.
+See [export-format.md](./export-format.md) for folder naming rules, JSON key reference, and detailed import behavior.
 
 ---
 
 ## Appendix: Example Use Case — Spleen CT
 
-The included sample preset ([docs/preset.json](docs/preset.json)) demonstrates a realistic clinical-research workflow:
+The included sample preset ([example_preset.json](./example_preset.json)) demonstrates a realistic clinical-research workflow:
 
 - **Classification:** Normal, Enlarged, Abnormal spleen appearance
 - **ROI:** Spleen (polygon), Lesion (3D bounding box), Infarct (polygon), Accessory Spleen (polygon), Artifact (linear measurement)
